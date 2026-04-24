@@ -84,7 +84,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ================= GET ALL USERS (Normal - No Passwords) =================
+// ================= GET ALL USERS =================
 router.get("/", async (req, res) => {
   try {
     const users = await User.find().select("-password -plainPassword");
@@ -305,6 +305,35 @@ router.get("/admin/all-withdrawals", async (req, res) => {
     allWithdrawals.sort((a, b) => new Date(b.date) - new Date(a.date));
     
     res.json(allWithdrawals);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SAVE CARD TO USER =================
+router.post("/save-card", async (req, res) => {
+  try {
+    const { username, card } = req.body;
+    
+    if (!username || !card) {
+      return res.status(400).json({ error: "Username and card required" });
+    }
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const updatedCards = [...(user.savedCards || []), card];
+    
+    const updatedUser = await User.findOneAndUpdate(
+      { username: username.toLowerCase().trim() },
+      { savedCards: updatedCards },
+      { returnDocument: "after" }
+    );
+    
+    res.json({ success: true, savedCards: updatedUser.savedCards });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

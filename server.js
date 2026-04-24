@@ -11,13 +11,26 @@ const app = express();
 // ================= MIDDLEWARE =================
 app.use(express.json());
 
-// ================= CORS (PRODUCTION READY) =================
+// ================= CORS (DEV + PRODUCTION) =================
+const allowedOrigins = [
+  "http://localhost:3000", // local frontend
+  process.env.CLIENT_URL,  // production frontend (Netlify)
+];
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true); // allow Postman / mobile apps
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     methods: ["GET", "POST", "PATCH", "DELETE"],
     credentials: true,
-  }),
+  })
 );
 
 // ================= ROUTES =================

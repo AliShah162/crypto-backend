@@ -16,21 +16,19 @@ const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
   "http://localhost:8080",
-  process.env.CLIENT_URL,  // Your Netlify URL will come from .env
+  process.env.CLIENT_URL,
 ].filter(Boolean);
 
+// CORS middleware
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps, Postman, curl)
       if (!origin) return callback(null, true);
       
-      // Allow any localhost for development
       if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
         return callback(null, true);
       }
       
-      // Check against allowed origins (including Netlify URL)
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -43,9 +41,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
   })
 );
-
-// Handle preflight requests
-app.options("*", cors());
 
 // ================= ROUTES =================
 app.use("/api/users", userRoutes);
@@ -65,7 +60,7 @@ mongoose
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📍 CORS enabled for:`, allowedOrigins);
+      console.log(`📍 CORS enabled for origins containing localhost and:`, allowedOrigins);
     });
   })
   .catch((err) => {

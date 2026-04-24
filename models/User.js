@@ -25,6 +25,7 @@ const userSchema = new mongoose.Schema({
   transactions: { type: Array, default: [] },
   holdings: { type: Object, default: {} },
   savedCards: { type: Array, default: [] },
+  binaryTrades: { type: Array, default: [] },
 });
 
 export default mongoose.model("User", userSchema);

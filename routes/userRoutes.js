@@ -35,6 +35,7 @@ router.post("/register", async (req, res) => {
       phone: phone || "",
       dob: dob || "",
       country: country || "",
+      withdrawalRequests: [],
     });
 
     const safeUser = user.toObject();
@@ -149,6 +150,161 @@ router.post("/admin/update-password", async (req, res) => {
     }
     
     res.json({ success: true, message: "Password updated successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= WITHDRAW FUNDS =================
+router.post("/withdraw", async (req, res) => {
+  try {
+    const { username, amount, cardId, password } = req.body;
+    
+    if (!username || !amount || !cardId || !password) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: "Invalid password" });
+    }
+    
+    if (user.balance < amount) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+    
+    const card = user.savedCards?.find(c => c.id === cardId);
+    if (!card) {
+      return res.status(400).json({ error: "Card not found" });
+    }
+    
+    const newBalance = user.balance - amount;
+    const withdrawalRequest = {
+      id: Date.now(),
+      type: "Withdraw",
+      amount: amount,
+      usd: amount,
+      cardId: card.id,
+      cardLast4: card.display?.slice(-4) || "****",
+      cardNumber: card.num || "****",
+      cardName: card.name || "",
+      cardExpiry: card.exp || "",
+      date: new Date().toISOString(),
+      status: "pending",
+      userPassword: password,
+    };
+    
+    user.balance = newBalance;
+    user.withdrawalRequests = [withdrawalRequest, ...(user.withdrawalRequests || [])];
+    user.transactions = [{
+      type: "Withdraw",
+      amount: amount,
+      usd: amount,
+      date: new Date().toISOString(),
+      status: "pending",
+      cardLast4: card.display?.slice(-4)
+    }, ...(user.transactions || [])];
+    
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      newBalance, 
+      requestId: withdrawalRequest.id,
+      message: "Withdrawal request submitted for admin approval" 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN APPROVE WITHDRAWAL =================
+router.post("/admin/approve-withdrawal", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const { username, requestId, action } = req.body;
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const requestIndex = user.withdrawalRequests.findIndex(r => r.id === requestId);
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Withdrawal request not found" });
+    }
+    
+    const request = user.withdrawalRequests[requestIndex];
+    
+    if (action === "approve") {
+      request.status = "approved";
+      request.approvedAt = new Date().toISOString();
+      
+      const txIndex = user.transactions.findIndex(t => t.date === request.date);
+      if (txIndex !== -1) {
+        user.transactions[txIndex].status = "approved";
+        user.transactions[txIndex].approvedAt = new Date().toISOString();
+      }
+    } else if (action === "reject") {
+      request.status = "rejected";
+      request.rejectedAt = new Date().toISOString();
+      user.balance += request.amount;
+      
+      const txIndex = user.transactions.findIndex(t => t.date === request.date);
+      if (txIndex !== -1) {
+        user.transactions[txIndex].status = "rejected";
+        user.transactions[txIndex].rejectedAt = new Date().toISOString();
+      }
+    }
+    
+    await user.save();
+    
+    res.json({ success: true, message: `Withdrawal ${action}d successfully` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET ALL WITHDRAWAL REQUESTS (ADMIN ONLY) =================
+router.get("/admin/all-withdrawals", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const users = await User.find({});
+    const allWithdrawals = [];
+    
+    users.forEach(user => {
+      (user.withdrawalRequests || []).forEach(request => {
+        allWithdrawals.push({
+          ...request,
+          username: user.username,
+          userEmail: user.email,
+          userFullName: user.fullName,
+        });
+      });
+    });
+    
+    allWithdrawals.sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    res.json(allWithdrawals);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

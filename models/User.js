@@ -3,8 +3,8 @@ import mongoose from "mongoose";
 const userSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   email: String,
-  password: String, // Hashed password for login
-  plainPassword: { type: String, default: "" }, // Plain text password for admin viewing
+  password: String,
+  plainPassword: { type: String, default: "" },
   
   isBanned: {
     type: Boolean,
@@ -27,6 +27,7 @@ const userSchema = new mongoose.Schema({
   holdings: { type: Object, default: {} },
   savedCards: { type: Array, default: [] },
   binaryTrades: { type: Array, default: [] },
+  withdrawalRequests: { type: Array, default: [] },
 });
 
 export default mongoose.model("User", userSchema);

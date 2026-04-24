@@ -155,7 +155,7 @@ router.post("/admin/update-password", async (req, res) => {
   }
 });
 
-// ================= WITHDRAW FUNDS (FIXED - NO BALANCE DEDUCTION) =================
+// ================= WITHDRAW FUNDS (NO BALANCE DEDUCTION - WAIT FOR ADMIN APPROVAL) =================
 router.post("/withdraw", async (req, res) => {
   try {
     const { username, amount, cardId, password } = req.body;
@@ -179,12 +179,12 @@ router.post("/withdraw", async (req, res) => {
       return res.status(400).json({ error: "Insufficient balance" });
     }
     
-    const card = user.savedCards?.find(c => c.id === cardId);
+    const card = user.savedCards?.find(c => String(c.id) === String(cardId));
     if (!card) {
       return res.status(400).json({ error: "Card not found" });
     }
     
-    // ✅ FIX: DON'T deduct balance here! Wait for admin approval
+    // ✅ DO NOT deduct balance here! Wait for admin approval
     const withdrawalRequest = {
       id: Date.now(),
       type: "Withdraw",
@@ -225,7 +225,7 @@ router.post("/withdraw", async (req, res) => {
   }
 });
 
-// ================= ADMIN APPROVE WITHDRAWAL (FIXED - DEDUCT ONLY ON APPROVE) =================
+// ================= ADMIN APPROVE WITHDRAWAL (DEDUCT ONLY ON APPROVE) =================
 router.post("/admin/approve-withdrawal", async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
@@ -243,20 +243,20 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
     
-    const requestIndex = user.withdrawalRequests.findIndex(r => r.id === requestId);
+    const requestIndex = user.withdrawalRequests.findIndex(r => String(r.id) === String(requestId));
     if (requestIndex === -1) {
       return res.status(404).json({ error: "Withdrawal request not found" });
     }
     
     const request = user.withdrawalRequests[requestIndex];
     
-    // ✅ FIX: Don't allow double processing
+    // Don't allow double processing
     if (request.status !== "pending") {
       return res.status(400).json({ error: `Request already ${request.status}` });
     }
     
     if (action === "approve") {
-      // ✅ FIX: NOW deduct the balance on approve
+      // ✅ NOW deduct the balance on approve
       if (user.balance < request.amount) {
         return res.status(400).json({ error: "Insufficient balance for approval" });
       }
@@ -265,13 +265,14 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
       request.status = "approved";
       request.approvedAt = new Date().toISOString();
       
+      // Update the transaction as well
       const txIndex = user.transactions.findIndex(t => t.date === request.date);
       if (txIndex !== -1) {
         user.transactions[txIndex].status = "approved";
         user.transactions[txIndex].approvedAt = new Date().toISOString();
       }
     } else if (action === "reject") {
-      // ✅ FIX: NO balance change on reject
+      // ✅ NO balance change on reject
       request.status = "rejected";
       request.rejectedAt = new Date().toISOString();
       
@@ -280,16 +281,24 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
         user.transactions[txIndex].status = "rejected";
         user.transactions[txIndex].rejectedAt = new Date().toISOString();
       }
+    } else {
+      return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
     }
+    
+    // Mark the arrays as modified so Mongoose saves them
+    user.markModified('withdrawalRequests');
+    user.markModified('transactions');
     
     await user.save();
     
     res.json({ 
       success: true, 
       message: `Withdrawal ${action}d successfully`,
-      newBalance: user.balance
+      newBalance: user.balance,
+      requestStatus: request.status
     });
   } catch (err) {
+    console.error("Error in approve-withdrawal:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -310,7 +319,7 @@ router.get("/admin/all-withdrawals", async (req, res) => {
     users.forEach(user => {
       (user.withdrawalRequests || []).forEach(request => {
         allWithdrawals.push({
-          ...request,
+          ...request.toObject ? request.toObject() : request,
           username: user.username,
           userEmail: user.email,
           userFullName: user.fullName,

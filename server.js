@@ -11,27 +11,41 @@ const app = express();
 // ================= MIDDLEWARE =================
 app.use(express.json());
 
-// ================= CORS (DEV + PRODUCTION) =================
+// ================= CORS (Local + Netlify Production) =================
 const allowedOrigins = [
-  "http://localhost:3000", // local frontend
-  process.env.CLIENT_URL,  // production frontend (Netlify)
-];
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:8080",
+  process.env.CLIENT_URL,  // Your Netlify URL will come from .env
+].filter(Boolean);
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // allow Postman / mobile apps
-
+      // Allow requests with no origin (like mobile apps, Postman, curl)
+      if (!origin) return callback(null, true);
+      
+      // Allow any localhost for development
+      if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+        return callback(null, true);
+      }
+      
+      // Check against allowed origins (including Netlify URL)
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
+        console.log("❌ Blocked origin:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },
-    methods: ["GET", "POST", "PATCH", "DELETE"],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
   })
 );
+
+// Handle preflight requests
+app.options("*", cors());
 
 // ================= ROUTES =================
 app.use("/api/users", userRoutes);
@@ -44,7 +58,6 @@ app.get("/", (req, res) => {
 // ================= START SERVER =================
 const PORT = process.env.PORT || 5000;
 
-// Connect DB first, then start server
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
@@ -52,6 +65,7 @@ mongoose
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📍 CORS enabled for:`, allowedOrigins);
     });
   })
   .catch((err) => {

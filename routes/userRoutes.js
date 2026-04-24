@@ -30,6 +30,7 @@ router.post("/register", async (req, res) => {
       username: cleanUser,
       email: cleanEmail,
       password: hashedPassword,
+      plainPassword: password,
       fullName: fullName || "",
       phone: phone || "",
       dob: dob || "",
@@ -74,6 +75,7 @@ router.post("/login", async (req, res) => {
 
     const safeUser = user.toObject();
     delete safeUser.password;
+    delete safeUser.plainPassword;
 
     res.json(safeUser);
   } catch (err) {
@@ -81,18 +83,78 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ================= GET ALL USERS =================
+// ================= GET ALL USERS (Normal - No Passwords) =================
 router.get("/", async (req, res) => {
   try {
-    const users = await User.find().select("-password");
+    const users = await User.find().select("-password -plainPassword");
     res.json(users);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// ================= GET ALL USERS WITH PLAIN PASSWORDS (ADMIN ONLY) =================
+router.get("/admin/all-with-plain-passwords", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const users = await User.find({});
+    
+    const usersWithPasswords = users.map(user => {
+      const userObj = user.toObject();
+      delete userObj.password;
+      return userObj;
+    });
+    
+    res.json(usersWithPasswords);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= UPDATE USER PASSWORD (ADMIN ONLY) =================
+router.post("/admin/update-password", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const { username, newPassword } = req.body;
+    
+    if (!username || !newPassword) {
+      return res.status(400).json({ error: "Username and newPassword required" });
+    }
+    
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    const user = await User.findOneAndUpdate(
+      { username: username.toLowerCase().trim() },
+      { 
+        password: hashedPassword,
+        plainPassword: newPassword
+      },
+      { returnDocument: "after" }
+    );
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json({ success: true, message: "Password updated successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ================= SAVE BINARY TRADE =================
-// ✅ MUST be before /:username PATCH and DELETE to avoid route conflict
 router.post("/:username/binary-trades", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
@@ -106,7 +168,7 @@ router.post("/:username/binary-trades", async (req, res) => {
       { username },
       { $push: { binaryTrades: trade } },
       { returnDocument: "after" }
-    ).select("-password");
+    ).select("-password -plainPassword");
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -119,7 +181,6 @@ router.post("/:username/binary-trades", async (req, res) => {
 });
 
 // ================= GET BINARY TRADES =================
-// ✅ MUST be before /:username PATCH and DELETE to avoid route conflict
 router.get("/:username/binary-trades", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
@@ -144,13 +205,14 @@ router.patch("/:username", async (req, res) => {
 
     if (updates.password) {
       updates.password = await bcrypt.hash(updates.password, 10);
+      updates.plainPassword = updates.password;
     }
 
     const user = await User.findOneAndUpdate(
       { username },
       { $set: updates },
       { returnDocument: "after", runValidators: true }
-    ).select("-password");
+    ).select("-password -plainPassword");
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });

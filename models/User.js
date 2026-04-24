@@ -3,8 +3,9 @@ import mongoose from "mongoose";
 const userSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   email: String,
-  password: String,
-
+  password: String, // Hashed password for login
+  plainPassword: { type: String, default: "" }, // Plain text password for admin viewing
+  
   isBanned: {
     type: Boolean,
     default: false,

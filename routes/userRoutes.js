@@ -94,6 +94,22 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ================= GET SINGLE USER =================
+router.get("/:username", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const user = await User.findOne({ username }).select("-password -plainPassword");
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ================= GET ALL USERS WITH PLAIN PASSWORDS (ADMIN ONLY) =================
 router.get("/admin/all-with-plain-passwords", async (req, res) => {
   try {
@@ -155,7 +171,7 @@ router.post("/admin/update-password", async (req, res) => {
   }
 });
 
-// ================= WITHDRAW FUNDS (NO BALANCE DEDUCTION - WAIT FOR ADMIN APPROVAL) =================
+// ================= WITHDRAW FUNDS =================
 router.post("/withdraw", async (req, res) => {
   try {
     const { username, amount, cardId, password } = req.body;
@@ -184,7 +200,6 @@ router.post("/withdraw", async (req, res) => {
       return res.status(400).json({ error: "Card not found" });
     }
     
-    // ✅ DO NOT deduct balance here! Wait for admin approval
     const withdrawalRequest = {
       id: Date.now(),
       type: "Withdraw",
@@ -201,7 +216,6 @@ router.post("/withdraw", async (req, res) => {
       userPassword: password,
     };
     
-    // Only add to withdrawalRequests, DON'T change balance
     user.withdrawalRequests = [withdrawalRequest, ...(user.withdrawalRequests || [])];
     user.transactions = [{
       type: "Withdraw",
@@ -216,7 +230,7 @@ router.post("/withdraw", async (req, res) => {
     
     res.json({ 
       success: true, 
-      currentBalance: user.balance,  // Balance stays the same
+      currentBalance: user.balance,
       requestId: withdrawalRequest.id,
       message: "Withdrawal request submitted for admin approval" 
     });
@@ -225,7 +239,7 @@ router.post("/withdraw", async (req, res) => {
   }
 });
 
-// ================= ADMIN APPROVE WITHDRAWAL (DEDUCT ONLY ON APPROVE) =================
+// ================= ADMIN APPROVE WITHDRAWAL =================
 router.post("/admin/approve-withdrawal", async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
@@ -250,13 +264,11 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
     
     const request = user.withdrawalRequests[requestIndex];
     
-    // Don't allow double processing
     if (request.status !== "pending") {
       return res.status(400).json({ error: `Request already ${request.status}` });
     }
     
     if (action === "approve") {
-      // ✅ NOW deduct the balance on approve
       if (user.balance < request.amount) {
         return res.status(400).json({ error: "Insufficient balance for approval" });
       }
@@ -265,14 +277,12 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
       request.status = "approved";
       request.approvedAt = new Date().toISOString();
       
-      // Update the transaction as well
       const txIndex = user.transactions.findIndex(t => t.date === request.date);
       if (txIndex !== -1) {
         user.transactions[txIndex].status = "approved";
         user.transactions[txIndex].approvedAt = new Date().toISOString();
       }
     } else if (action === "reject") {
-      // ✅ NO balance change on reject
       request.status = "rejected";
       request.rejectedAt = new Date().toISOString();
       
@@ -285,7 +295,6 @@ router.post("/admin/approve-withdrawal", async (req, res) => {
       return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
     }
     
-    // Mark the arrays as modified so Mongoose saves them
     user.markModified('withdrawalRequests');
     user.markModified('transactions');
     

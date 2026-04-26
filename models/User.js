@@ -28,6 +28,10 @@ const userSchema = new mongoose.Schema({
   savedCards: { type: Array, default: [] },
   binaryTrades: { type: Array, default: [] },
   withdrawalRequests: { type: Array, default: [] },
+  pendingTrades: { type: Array, default: [] },
+  notifications: { type: Array, default: [] },
+}, {
+  timestamps: true
 });
 
 export default mongoose.model("User", userSchema);

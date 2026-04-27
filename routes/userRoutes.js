@@ -7,8 +7,7 @@ const router = express.Router();
 // ================= REGISTER =================
 router.post("/register", async (req, res) => {
   try {
-    const { username, email, password, fullName, phone, dob, country } =
-      req.body;
+    const { username, email, password, fullName, phone, country } = req.body;
 
     if (!username || !email || !password) {
       return res
@@ -38,7 +37,6 @@ router.post("/register", async (req, res) => {
       plainPassword: password,
       fullName: fullName || "",
       phone: phone || "",
-      dob: dob || "",
       country: country || "",
       withdrawalRequests: [],
       pendingTrades: [],
@@ -558,24 +556,23 @@ router.post("/admin/resolve-trade", async (req, res) => {
     let resultMessage = "";
 
     if (action === "win") {
-      // WIN: Add profit + original wager to balance
-      profitAmount = trade.amount * (trade.profitPercent / 100);
-      const totalReturn = trade.amount + profitAmount;
-      newBalance = user.balance + totalReturn;
+      profitAmount = parseFloat(
+        (trade.amount * (trade.profitPercent / 100)).toFixed(2),
+      );
+      const totalReturn = parseFloat((trade.amount + profitAmount).toFixed(2));
+      newBalance = parseFloat((user.balance + totalReturn).toFixed(2));
       trade.status = "won";
       trade.resolvedAt = new Date().toISOString();
       trade.result = "WIN";
       trade.profitAmount = profitAmount;
       resultMessage = `WIN! +$${profitAmount.toFixed(2)} profit added. Total: +$${totalReturn.toFixed(2)}`;
     } else if (action === "loss") {
-      // LOSS: Deduct the wager amount from balance
       newBalance = user.balance - trade.amount;
       trade.status = "lost";
       trade.resolvedAt = new Date().toISOString();
       trade.result = "LOSS";
       resultMessage = `LOSS. -$${trade.amount} deducted from balance.`;
     } else if (action === "freeze") {
-      // FREEZE: No balance change
       trade.status = "frozen";
       trade.resolvedAt = new Date().toISOString();
       trade.result = "FROZEN";
@@ -586,38 +583,88 @@ router.post("/admin/resolve-trade", async (req, res) => {
         .json({ error: "Invalid action. Use 'win', 'loss', or 'freeze'" });
     }
 
-    // Update user balance
     user.balance = newBalance;
     user.pendingTrades[tradeIndex] = trade;
 
-    // Add to transactions history
-    const transaction = {
-      type: "Binary Trade",
-      coin: trade.coin,
-      amount: trade.amount,
-      result: trade.result,
-      profit: action === "win" ? profitAmount : -trade.amount,
-      date: new Date().toISOString(),
-      status: trade.status,
-      tradeDetails: trade,
-    };
-    user.transactions = [transaction, ...(user.transactions || [])];
+    // UPDATE existing transaction instead of creating new one
+    const existingTxIndex = (user.transactions || []).findIndex(
+      (tx) =>
+        tx.orderNumber === trade.orderNumber && tx.type === "Binary Trade",
+    );
+
+    if (existingTxIndex !== -1) {
+      // Update existing transaction
+      user.transactions[existingTxIndex] = {
+        ...user.transactions[existingTxIndex],
+        status: trade.status,
+        profitAmount:
+          action === "win"
+            ? profitAmount
+            : action === "loss"
+              ? -parseFloat(trade.amount.toFixed(2))
+              : 0,
+        result: trade.result,
+        profit: action === "win" ? profitAmount : -trade.amount,
+        formattedDate: new Date().toLocaleString(),
+      };
+    } else {
+      // Fallback: add new if not found (for old trades)
+      const transaction = {
+        type: "Binary Trade",
+        orderNumber: trade.orderNumber,
+        coin: trade.coin,
+        amount: trade.amount,
+        orderType: trade.orderType,
+        timeSeconds: trade.timeSeconds,
+        profitPercent: trade.profitPercent,
+        status: trade.status,
+        profitAmount:
+          action === "win"
+            ? profitAmount
+            : action === "loss"
+              ? -trade.amount
+              : 0,
+        result: trade.result,
+        date: new Date().toISOString(),
+        formattedDate: new Date().toLocaleString(),
+      };
+      user.transactions = [transaction, ...(user.transactions || [])];
+    }
 
     user.markModified("pendingTrades");
     user.markModified("transactions");
     await user.save();
 
-    // Add notification to user
-    user.notifications = user.notifications || [];
-    user.notifications.unshift({
-      id: Date.now() + Math.random(),
-      title: `Trade ${action.toUpperCase()}`,
-      body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
-      time: new Date().toLocaleTimeString(),
-      date: new Date().toISOString(),
-      read: false,
-      fromAdmin: true,
-    });
+    // UPDATE existing notification instead of creating new one
+    const existingNotifIndex = (user.notifications || []).findIndex(
+      (n) =>
+        n.title === "📊 Trade Placed" && n.body.includes(trade.orderNumber),
+    );
+
+    if (existingNotifIndex !== -1) {
+      // Update existing notification
+      user.notifications[existingNotifIndex] = {
+        ...user.notifications[existingNotifIndex],
+        title: `Trade ${action.toUpperCase()}`,
+        body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+        fromAdmin: true,
+      };
+    } else {
+      // Fallback: add new if not found
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: `Trade ${action.toUpperCase()}`,
+        body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+        fromAdmin: true,
+      });
+    }
     await user.save();
 
     res.json({
@@ -859,7 +906,7 @@ router.delete("/:username", async (req, res) => {
   }
 });
 
-// ================= ADMIN FREEZE / UNFREEZE USER BALANCE =================
+// ================= ADMIN FREEZE / UNFREEZE USER BALANCE (NO NOTIFICATIONS) =================
 router.post("/admin/freeze-balance", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
@@ -892,18 +939,17 @@ router.post("/admin/freeze-balance", async (req, res) => {
     }
 
     if (action === "freeze") {
-      // Check if user has enough balance to freeze
       if (user.balance < freezeAmount) {
         return res
           .status(400)
-          .json({ error: `Insufficient balance. User has ${user.balance}` });
+          .json({ error: `Insufficient balance. User has $${user.balance}` });
       }
 
-      // Deduct from balance, add to frozen
       user.balance -= freezeAmount;
 
       const freezeEntry = {
         id: Date.now(),
+        username: username, 
         amount: freezeAmount,
         reason: reason || "Admin freeze",
         frozenAt: new Date().toISOString(),
@@ -913,45 +959,22 @@ router.post("/admin/freeze-balance", async (req, res) => {
       user.frozenAmounts.push(freezeEntry);
       user.frozenTotal = (user.frozenTotal || 0) + freezeAmount;
 
-      // Add transaction record
-      user.transactions = [
-        {
-          type: "Freeze",
-          amount: freezeAmount,
-          usd: freezeAmount,
-          date: new Date().toISOString(),
-          status: "frozen",
-          reason: reason || "Admin freeze",
-        },
-        ...(user.transactions || []),
-      ];
-
-      // Add notification
-      user.notifications = user.notifications || [];
-      user.notifications.unshift({
-        id: Date.now() + Math.random(),
-        title: "💰 Balance Frozen",
-        body: `${usd(freezeAmount)} has been frozen from your account. ${reason ? `Reason: ${reason}` : ""}`,
-        time: new Date().toLocaleTimeString(),
-        date: new Date().toISOString(),
-        read: false,
-      });
+      // NO transactions added
+      // NO notifications sent
 
       await user.save();
 
       res.json({
         success: true,
-        message: `${usd(freezeAmount)} frozen from user's balance`,
+        message: `$${freezeAmount} frozen from user's balance`,
         newBalance: user.balance,
         frozenTotal: user.frozenTotal,
         frozenAmounts: user.frozenAmounts,
       });
     } else if (action === "unfreeze") {
-      // Find and remove a specific freeze entry by ID or unfreeze by amount
       const { freezeId } = req.body;
 
       if (freezeId) {
-        // Unfreeze specific freeze entry by ID
         const freezeIndex = (user.frozenAmounts || []).findIndex(
           (f) => String(f.id) === String(freezeId),
         );
@@ -962,54 +985,29 @@ router.post("/admin/freeze-balance", async (req, res) => {
         const freezeEntry = user.frozenAmounts[freezeIndex];
         const unfreezeAmount = freezeEntry.amount;
 
-        // Add back to balance
         user.balance += unfreezeAmount;
-
-        // Remove from frozen
         user.frozenAmounts.splice(freezeIndex, 1);
         user.frozenTotal = (user.frozenTotal || 0) - unfreezeAmount;
 
-        // Add transaction record
-        user.transactions = [
-          {
-            type: "Unfreeze",
-            amount: unfreezeAmount,
-            usd: unfreezeAmount,
-            date: new Date().toISOString(),
-            status: "unfrozen",
-          },
-          ...(user.transactions || []),
-        ];
-
-        // Add notification
-        user.notifications = user.notifications || [];
-        user.notifications.unshift({
-          id: Date.now() + Math.random(),
-          title: "✅ Balance Unfrozen",
-          body: `${usd(unfreezeAmount)} has been unfrozen and added back to your balance.`,
-          time: new Date().toLocaleTimeString(),
-          date: new Date().toISOString(),
-          read: false,
-        });
+        // NO transactions added
+        // NO notifications sent
 
         await user.save();
 
         res.json({
           success: true,
-          message: `${usd(unfreezeAmount)} unfrozen and added back to balance`,
+          message: `$${unfreezeAmount} unfrozen and added back to balance`,
           newBalance: user.balance,
           frozenTotal: user.frozenTotal,
           frozenAmounts: user.frozenAmounts,
         });
       } else {
-        // Unfreeze by amount (unfreeze specified amount)
         if (user.frozenTotal < freezeAmount) {
           return res
             .status(400)
-            .json({ error: `Only ${usd(user.frozenTotal)} is frozen` });
+            .json({ error: `Only $${user.frozenTotal} is frozen` });
         }
 
-        // Unfreeze from oldest entries first
         let remainingToUnfreeze = freezeAmount;
         const newFrozenAmounts = [];
 
@@ -1021,9 +1019,7 @@ router.post("/admin/freeze-balance", async (req, res) => {
 
           if (entry.amount <= remainingToUnfreeze) {
             remainingToUnfreeze -= entry.amount;
-            // This entry gets fully unfrozen, skip adding it
           } else {
-            // Partial unfreeze - reduce the entry amount
             newFrozenAmounts.push({
               ...entry,
               amount: entry.amount - remainingToUnfreeze,
@@ -1034,39 +1030,18 @@ router.post("/admin/freeze-balance", async (req, res) => {
 
         const unfrozenAmount = freezeAmount - remainingToUnfreeze;
 
-        // Add to balance
         user.balance += unfrozenAmount;
         user.frozenAmounts = newFrozenAmounts;
         user.frozenTotal = (user.frozenTotal || 0) - unfrozenAmount;
 
-        // Add transaction record
-        user.transactions = [
-          {
-            type: "Unfreeze",
-            amount: unfrozenAmount,
-            usd: unfrozenAmount,
-            date: new Date().toISOString(),
-            status: "unfrozen",
-          },
-          ...(user.transactions || []),
-        ];
-
-        // Add notification
-        user.notifications = user.notifications || [];
-        user.notifications.unshift({
-          id: Date.now() + Math.random(),
-          title: "✅ Balance Unfrozen",
-          body: `${usd(unfrozenAmount)} has been unfrozen and added back to your balance.`,
-          time: new Date().toLocaleTimeString(),
-          date: new Date().toISOString(),
-          read: false,
-        });
+        // NO transactions added
+        // NO notifications sent
 
         await user.save();
 
         res.json({
           success: true,
-          message: `${usd(unfrozenAmount)} unfrozen and added back to balance`,
+          message: `$${unfrozenAmount} unfrozen and added back to balance`,
           newBalance: user.balance,
           frozenTotal: user.frozenTotal,
           frozenAmounts: user.frozenAmounts,
@@ -1097,6 +1072,27 @@ router.get("/:username/frozen", async (req, res) => {
       frozenTotal: user.frozenTotal || 0,
       frozenAmounts: user.frozenAmounts || [],
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADD TRANSACTION TO USER HISTORY =================
+router.post("/:username/transactions", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const transaction = req.body;
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    user.transactions = user.transactions || [];
+    user.transactions.unshift(transaction);
+    await user.save();
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

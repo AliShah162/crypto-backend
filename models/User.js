@@ -32,6 +32,7 @@ const userSchema = new mongoose.Schema({
   withdrawalRequests: { type: Array, default: [] },
   pendingTrades: { type: Array, default: [] },
   notifications: { type: Array, default: [] },
+  depositRequests: { type: Array, default: [] },
 }, {
   timestamps: true
 });

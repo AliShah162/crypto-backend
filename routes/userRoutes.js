@@ -2,8 +2,53 @@ import express from "express";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
+import crypto from "crypto";
 
 const router = express.Router();
+
+// ================= MASTER ADMIN SESSION HELPERS =================
+function generateSessionId() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function getClientIp(req) {
+  return (
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    "unknown"
+  );
+}
+
+function getDeviceInfo(userAgent) {
+  if (!userAgent) return "Unknown Device";
+
+  const ua = userAgent.toLowerCase();
+
+  if (ua.includes("mobile")) return "📱 Mobile Device";
+  if (ua.includes("tablet")) return "📱 Tablet";
+  if (ua.includes("windows")) return "💻 Windows PC";
+  if (ua.includes("mac")) return "🍎 Mac Computer";
+  if (ua.includes("linux")) return "🐧 Linux Computer";
+  if (ua.includes("iphone")) return "📱 iPhone";
+  if (ua.includes("android")) return "📱 Android Phone";
+
+  return "💻 Desktop Computer";
+}
+
+function getBrowserInfo(userAgent) {
+  if (!userAgent) return "Unknown";
+
+  const ua = userAgent.toLowerCase();
+
+  if (ua.includes("chrome") && !ua.includes("edg")) return "Chrome";
+  if (ua.includes("firefox")) return "Firefox";
+  if (ua.includes("safari") && !ua.includes("chrome")) return "Safari";
+  if (ua.includes("edg")) return "Edge";
+  if (ua.includes("opera")) return "Opera";
+
+  return "Other Browser";
+}
 
 // ================= REGISTER =================
 router.post("/register", async (req, res) => {
@@ -54,6 +99,7 @@ router.post("/register", async (req, res) => {
 });
 
 // ================= LOGIN =================
+// ================= LOGIN =================
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -70,8 +116,19 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid credentials" });
     }
 
+    // Check regular user ban
     if (user.isBanned) {
       return res.status(403).json({ error: "BANNED" });
+    }
+
+    // ✅ CHECK ADMIN BAN - BLOCK BANNED ADMINS FROM LOGGING IN
+    if (user.role === "admin" && user.isAdminBanned === true) {
+      return res.status(403).json({ 
+        error: "ADMIN_BANNED",
+        message: "Your admin access has been revoked",
+        reason: user.adminBanReason || "No reason provided",
+        bannedAt: user.adminBannedAt
+      });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -83,6 +140,11 @@ router.post("/login", async (req, res) => {
     const safeUser = user.toObject();
     delete safeUser.password;
     delete safeUser.plainPassword;
+    
+    // ✅ Explicitly ensure ban fields are included in response
+    safeUser.isAdminBanned = user.isAdminBanned || false;
+    safeUser.adminBanReason = user.adminBanReason || null;
+    safeUser.adminBannedAt = user.adminBannedAt || null;
 
     res.json(safeUser);
   } catch (err) {
@@ -185,11 +247,19 @@ router.post("/admin/update-password", async (req, res) => {
   }
 });
 
-
 // ================= WITHDRAW FUNDS =================
 router.post("/withdraw", async (req, res) => {
   try {
-    const { username, amount, cardId, password, holderName, bankName, accNumber, cvv } = req.body;
+    const {
+      username,
+      amount,
+      cardId,
+      password,
+      holderName,
+      bankName,
+      accNumber,
+      cvv,
+    } = req.body;
 
     if (!username || !amount || !cardId || !password) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -248,7 +318,8 @@ router.post("/withdraw", async (req, res) => {
         usd: amount,
         date: new Date().toISOString(),
         status: "pending",
-        cardLast4: card.display?.slice(-4) || card.accNumber?.slice(-4) || "****",
+        cardLast4:
+          card.display?.slice(-4) || card.accNumber?.slice(-4) || "****",
         holderName: holderName || card.holderName || "",
         bankName: bankName || card.bankName || "",
       },
@@ -815,7 +886,7 @@ router.delete("/:username/notifications/:notificationId", async (req, res) => {
 
     // Remove the notification - NO ADMIN KEY REQUIRED FOR OWN NOTIFICATIONS
     user.notifications = (user.notifications || []).filter(
-      (n) => String(n.id) !== String(notificationId)
+      (n) => String(n.id) !== String(notificationId),
     );
     await user.save();
 
@@ -832,21 +903,21 @@ router.delete("/:username/notifications/all", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
     console.log("🔴 DELETE ALL - Username:", username);
-    
+
     // Use direct database access (bypasses Mongoose)
     const db = mongoose.connection.db;
-    const collection = db.collection('users');
-    
+    const collection = db.collection("users");
+
     const result = await collection.updateOne(
       { username: username },
-      { $set: { notifications: [] } }
+      { $set: { notifications: [] } },
     );
-    
+
     console.log("Delete result:", result);
-    
-    res.json({ 
-      success: true, 
-      modifiedCount: result.modifiedCount
+
+    res.json({
+      success: true,
+      modifiedCount: result.modifiedCount,
     });
   } catch (err) {
     console.error("❌ Error clearing all notifications:", err);
@@ -949,9 +1020,9 @@ router.post("/admin/freeze-balance", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY;
-if (!validAdminKey) {
-  return res.status(500).json({ error: "API key not configured" });
-}
+    if (!validAdminKey) {
+      return res.status(500).json({ error: "API key not configured" });
+    }
 
     if (!adminKey || adminKey !== validAdminKey) {
       return res
@@ -990,7 +1061,7 @@ if (!validAdminKey) {
 
       const freezeEntry = {
         id: Date.now(),
-        username: username, 
+        username: username,
         amount: freezeAmount,
         reason: reason || "Admin freeze",
         frozenAt: new Date().toISOString(),
@@ -1139,8 +1210,6 @@ router.post("/:username/transactions", async (req, res) => {
   }
 });
 
-
-
 // ================= CREATE DEPOSIT REQUEST =================
 router.post("/deposit-request", async (req, res) => {
   try {
@@ -1150,7 +1219,9 @@ router.post("/deposit-request", async (req, res) => {
       return res.status(400).json({ error: "Username and amount required" });
     }
 
-    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -1186,7 +1257,9 @@ router.get("/admin/all-deposits", async (req, res) => {
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
     if (!adminKey || adminKey !== validAdminKey) {
-      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
     }
 
     const users = await User.find({});
@@ -1217,18 +1290,22 @@ router.post("/admin/approve-deposit", async (req, res) => {
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
     if (!adminKey || adminKey !== validAdminKey) {
-      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
     }
 
     const { username, requestId, action } = req.body;
 
-    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
     const requestIndex = (user.depositRequests || []).findIndex(
-      (r) => String(r.id) === String(requestId)
+      (r) => String(r.id) === String(requestId),
     );
     if (requestIndex === -1) {
       return res.status(404).json({ error: "Deposit request not found" });
@@ -1237,7 +1314,9 @@ router.post("/admin/approve-deposit", async (req, res) => {
     const request = user.depositRequests[requestIndex];
 
     if (request.status !== "pending") {
-      return res.status(400).json({ error: `Request already ${request.status}` });
+      return res
+        .status(400)
+        .json({ error: `Request already ${request.status}` });
     }
 
     if (action === "approve") {
@@ -1281,7 +1360,9 @@ router.post("/admin/approve-deposit", async (req, res) => {
         read: false,
       });
     } else {
-      return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
+      return res
+        .status(400)
+        .json({ error: "Invalid action. Use 'approve' or 'reject'" });
     }
 
     user.markModified("depositRequests");
@@ -1301,9 +1382,6 @@ router.post("/admin/approve-deposit", async (req, res) => {
   }
 });
 
-
-
-
 // ================= CLEAR COMPLETED TRADES ONLY (ADMIN ONLY) =================
 router.delete("/admin/clear-completed-trades", async (req, res) => {
   try {
@@ -1311,7 +1389,9 @@ router.delete("/admin/clear-completed-trades", async (req, res) => {
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
     if (!adminKey || adminKey !== validAdminKey) {
-      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
     }
 
     // Get all users
@@ -1323,7 +1403,7 @@ router.delete("/admin/clear-completed-trades", async (req, res) => {
         const originalLength = user.pendingTrades.length;
         // Keep only pending trades, remove won/lost/frozen
         user.pendingTrades = user.pendingTrades.filter(
-          trade => trade.status === "pending"
+          (trade) => trade.status === "pending",
         );
         user.binaryTrades = []; // Clear old binaryTrades
         totalCleared += originalLength - user.pendingTrades.length;
@@ -1342,38 +1422,30 @@ router.delete("/admin/clear-completed-trades", async (req, res) => {
   }
 });
 
-
-
-
-
-
-
-
-
 // ================= DEBUG - FORCE DELETE ALL =================
 router.delete("/debug/force-delete-all/:username", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    
+
     // Try direct database command
     const db = mongoose.connection.db;
-    const collection = db.collection('users');
-    
+    const collection = db.collection("users");
+
     const result = await collection.updateOne(
       { username: username },
-      { $set: { notifications: [] } }
+      { $set: { notifications: [] } },
     );
-    
+
     console.log("Direct DB update result:", result);
-    
+
     // Verify
     const user = await collection.findOne({ username: username });
     console.log("After direct update - notifications:", user?.notifications);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       result: result,
-      currentNotifications: user?.notifications || []
+      currentNotifications: user?.notifications || [],
     });
   } catch (err) {
     console.error("Error:", err);
@@ -1381,4 +1453,801 @@ router.delete("/debug/force-delete-all/:username", async (req, res) => {
   }
 });
 
+// ================= MASTER ADMIN SESSION MANAGEMENT =================
+
+// REGISTER ADMIN SESSION - Called when admin panel loads
+router.post("/admin/register-session", async (req, res) => {
+  try {
+    const { adminKey, userAgent, adminUsername } = req.body; // ADD adminUsername
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const sessionId = generateSessionId();
+    const ipAddress = getClientIp(req);
+    const deviceInfo = getDeviceInfo(userAgent);
+    const browser = getBrowserInfo(userAgent);
+
+    // Find or create master admin user
+    let masterAdmin = await User.findOne({ username: "master_admin" });
+
+    if (!masterAdmin) {
+      masterAdmin = new User({
+        username: "master_admin",
+        email: "master@admin.local",
+        isMasterAdmin: true,
+        adminSessions: [],
+      });
+    }
+
+    // Ensure adminSessions array exists
+    if (!masterAdmin.adminSessions) masterAdmin.adminSessions = [];
+
+    // Add new session - STORE THE ADMIN USERNAME
+    masterAdmin.adminSessions.push({
+      sessionId,
+      ipAddress: ipAddress,
+      userAgent: userAgent || "Unknown",
+      deviceInfo: `${browser} - ${deviceInfo}`,
+      loggedInAt: new Date(),
+      lastActiveAt: new Date(),
+      isActive: true,
+      sessionUser: adminUsername || "master_admin", // USE THE PROVIDED USERNAME
+    });
+
+    // Keep only last 50 sessions
+    if (masterAdmin.adminSessions.length > 50) {
+      masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-50);
+    }
+
+    await masterAdmin.save();
+
+    res.json({
+      success: true,
+      sessionId,
+      message: "Admin session registered",
+    });
+  } catch (err) {
+    console.error("Error registering admin session:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET ALL ACTIVE ADMIN SESSIONS
+router.get("/admin/sessions", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+
+    if (!masterAdmin) {
+      return res.json({ sessions: [] });
+    }
+
+    const sessions = (masterAdmin.adminSessions || [])
+      .sort((a, b) => new Date(b.lastActiveAt) - new Date(a.lastActiveAt))
+      .map((s) => ({
+        sessionId: s.sessionId,
+        ipAddress: s.ipAddress,
+        deviceInfo: s.deviceInfo,
+        loggedInAt: s.loggedInAt,
+        lastActiveAt: s.lastActiveAt,
+        isActive: s.isActive !== false, // Show true/false
+      }));
+
+    res.json({ sessions });
+  } catch (err) {
+    console.error("Error fetching admin sessions:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SESSION HEARTBEAT - Keep session alive
+router.post("/admin/session-heartbeat", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID required" });
+    }
+
+    const masterAdmin = await User.findOne({
+      username: "master_admin",
+      "adminSessions.sessionId": sessionId,
+      "adminSessions.isActive": true,
+    });
+
+    if (masterAdmin) {
+      const session = masterAdmin.adminSessions.find(
+        (s) => s.sessionId === sessionId,
+      );
+      if (session) {
+        session.lastActiveAt = new Date();
+        await masterAdmin.save();
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error updating session heartbeat:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REVOKE (KICK) A SPECIFIC SESSION
+router.delete("/admin/sessions/:sessionId", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { sessionId } = req.params;
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+
+    // Find and mark session as inactive
+    const session = masterAdmin.adminSessions.find(
+      (s) => s.sessionId === sessionId,
+    );
+    if (session) {
+      session.isActive = false;
+      session.kickedAt = new Date();
+      await masterAdmin.save();
+    }
+
+    // Also add to a kicked sessions list for real-time check
+    if (!masterAdmin.kickedSessions) masterAdmin.kickedSessions = [];
+    masterAdmin.kickedSessions.push({
+      sessionId: sessionId,
+      kickedAt: new Date(),
+    });
+    await masterAdmin.save();
+
+    res.json({
+      success: true,
+      message: "Session revoked",
+      sessionId: sessionId,
+    });
+  } catch (err) {
+    console.error("Error revoking session:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REVOKE ALL OTHER SESSIONS - Only revoke ACTIVE sessions
+router.post("/admin/revoke-others", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { currentSessionId } = req.body;
+    
+    console.log("🔴 Revoke others called with sessionId:", currentSessionId);
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+    
+    console.log(`📊 Total sessions before: ${masterAdmin.adminSessions.length}`);
+    
+    let revokedCount = 0;
+    
+    // Only revoke ACTIVE sessions (isActive !== false)
+    masterAdmin.adminSessions.forEach(session => {
+      if (session.sessionId !== currentSessionId && session.isActive !== false) {
+        session.isActive = false;
+        session.revokedAt = new Date();
+        revokedCount++;
+        console.log(`Revoked active session: ${session.sessionId?.slice(0, 20)}...`);
+      }
+    });
+    
+    masterAdmin.markModified('adminSessions');
+    await masterAdmin.save();
+    
+    console.log(`✅ Revoked ${revokedCount} active sessions`);
+    
+    res.json({ 
+      success: true, 
+      message: `Revoked ${revokedCount} other active sessions`,
+      revokedCount: revokedCount
+    });
+    
+  } catch (err) {
+    console.error("Error revoking other sessions:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN USER MANAGEMENT =================
+
+// GET ALL ADMIN USERS (users with role = "admin")
+router.get("/admin/all-admins", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const admins = await User.find({ role: "admin" }).select(
+      "-password -plainPassword",
+    );
+
+    res.json({ admins });
+  } catch (err) {
+    console.error("Error fetching admins:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// KICK ADMIN - Force logout immediately (session invalidation)
+router.post("/admin/kick-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { adminUsername } = req.body;
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    if (!adminUsername) {
+      return res.status(400).json({ error: "Admin username required" });
+    }
+
+    // Don't allow kicking yourself
+    const currentAdmin = await User.findOne({
+      username: adminKey === validAdminKey ? "master_admin" : "admin",
+    });
+    if (currentAdmin?.username === adminUsername) {
+      return res.status(400).json({ error: "You cannot kick yourself" });
+    }
+
+    const admin = await User.findOne({
+      username: adminUsername.toLowerCase().trim(),
+      role: "admin",
+    });
+
+    if (!admin) {
+      return res.status(404).json({ error: "Admin user not found" });
+    }
+
+    // Invalidate all active sessions for this admin
+    if (admin.adminSessions && admin.adminSessions.length > 0) {
+      admin.adminSessions.forEach((session) => {
+        session.isActive = false;
+        session.kickedAt = new Date();
+        session.kickedBy = adminKey;
+      });
+      await admin.save();
+    }
+
+    // Also add to a kicked sessions list for real-time check
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin) {
+      if (!masterAdmin.kickedAdmins) masterAdmin.kickedAdmins = [];
+      masterAdmin.kickedAdmins.push({
+        adminUsername: admin.username,
+        kickedAt: new Date(),
+        kickedBy: "master_admin",
+      });
+      await masterAdmin.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Admin @${adminUsername} has been kicked out. They will need to login again.`,
+    });
+  } catch (err) {
+    console.error("Error kicking admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// BAN ADMIN - Permanently block from admin panel
+router.post("/admin/ban-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { adminUsername, banReason } = req.body;
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    if (!adminUsername) {
+      return res.status(400).json({ error: "Admin username required" });
+    }
+
+    // Don't allow banning yourself
+    if (adminUsername === "master_admin") {
+      return res.status(400).json({ error: "Cannot ban the master admin" });
+    }
+
+    const admin = await User.findOne({
+      username: adminUsername.toLowerCase().trim(),
+      role: "admin",
+    });
+
+    if (!admin) {
+      return res.status(404).json({ error: "Admin user not found" });
+    }
+
+    // Ban the admin
+    admin.isAdminBanned = true;
+    admin.adminBanReason = banReason || "No reason provided";
+    admin.adminBannedAt = new Date();
+    admin.role = "user"; // Demote from admin to user
+
+    // Invalidate all sessions
+    if (admin.adminSessions) {
+      admin.adminSessions.forEach((session) => {
+        session.isActive = false;
+        session.bannedAt = new Date();
+      });
+    }
+
+    await admin.save();
+
+    // Log the ban in master admin records
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin) {
+      if (!masterAdmin.bannedAdmins) masterAdmin.bannedAdmins = [];
+      masterAdmin.bannedAdmins.push({
+        adminUsername: admin.username,
+        adminEmail: admin.email,
+        bannedAt: new Date(),
+        bannedBy: "master_admin",
+        banReason: banReason || "No reason provided",
+      });
+      await masterAdmin.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Admin @${adminUsername} has been BANNED from admin panel. They can no longer access.`,
+      bannedAdmin: {
+        username: admin.username,
+        email: admin.email,
+        bannedAt: admin.adminBannedAt,
+        reason: admin.adminBanReason,
+      },
+    });
+  } catch (err) {
+    console.error("Error banning admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// UNBAN ADMIN - Restore admin access
+router.post("/admin/unban-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { adminUsername } = req.body;
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    if (!adminUsername) {
+      return res.status(400).json({ error: "Admin username required" });
+    }
+
+    const admin = await User.findOne({
+      username: adminUsername.toLowerCase().trim(),
+    });
+
+    if (!admin) {
+      return res.status(404).json({ error: "Admin user not found" });
+    }
+
+    // Unban the admin
+    admin.isAdminBanned = false;
+    admin.adminUnbannedAt = new Date();
+    admin.role = "admin"; // Restore admin role
+
+    await admin.save();
+
+    // Update master admin records
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin && masterAdmin.bannedAdmins) {
+      const banRecord = masterAdmin.bannedAdmins.find(
+        (b) => b.adminUsername === admin.username,
+      );
+      if (banRecord) {
+        banRecord.unbannedAt = new Date();
+        banRecord.unbannedBy = "master_admin";
+        await masterAdmin.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Admin @${adminUsername} has been UNBANNED. They can now access the admin panel again.`,
+    });
+  } catch (err) {
+    console.error("Error unbanning admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET BANNED ADMINS LIST
+router.get("/admin/banned-admins", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const bannedAdmins = await User.find({
+      isAdminBanned: true,
+      role: { $ne: "admin" }, // Previously admins who are now banned
+    }).select("-password -plainPassword");
+
+    res.json({ bannedAdmins });
+  } catch (err) {
+    console.error("Error fetching banned admins:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// MIDDLEWARE: Check if admin is banned (add to all admin routes)
+// MIDDLEWARE: Check if admin is banned
+router.use("/admin", async (req, res, next) => {
+  // Skip for these routes
+  if (
+    req.path === "/admin/login" ||
+    req.path === "/admin/register-session" ||
+    req.path === "/admin/check-session" ||
+    req.path === "/admin/all-with-plain-passwords"
+  ) {
+    // Allow this for initial load
+    return next();
+  }
+
+  // Also skip if it's a GET request for sessions or admins (handled by master admin only)
+  if (
+    req.path === "/admin/sessions" ||
+    req.path === "/admin/all-admins" ||
+    req.path === "/admin/banned-admins"
+  ) {
+    return next();
+  }
+
+  const sessionId = req.headers["x-session-id"];
+
+  if (sessionId) {
+    try {
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      if (masterAdmin && masterAdmin.adminSessions) {
+        const session = masterAdmin.adminSessions.find(
+          (s) => s.sessionId === sessionId,
+        );
+        if (session && session.sessionUser) {
+          const adminUser = await User.findOne({
+            username: session.sessionUser,
+          });
+          if (adminUser && adminUser.isAdminBanned) {
+            return res.status(403).json({
+              error: "ADMIN_BANNED",
+              message:
+                "Your admin access has been revoked. Contact master admin.",
+              bannedAt: adminUser.adminBannedAt,
+              reason: adminUser.adminBanReason,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Middleware error:", err);
+    }
+  }
+
+  next();
+});
+
+// DEBUG - Check sessions
+router.get("/admin/debug-sessions", async (req, res) => {
+  try {
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (!masterAdmin) {
+      return res.json({ sessions: [] });
+    }
+
+    const sessions = masterAdmin.adminSessions.map((s) => ({
+      sessionId: s.sessionId?.slice(0, 20) + "...",
+      isActive: s.isActive,
+      lastActiveAt: s.lastActiveAt,
+    }));
+
+    res.json({ sessions, total: masterAdmin.adminSessions.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TEMPORARY - Clear all sessions (REMOVE AFTER USE)
+router.post("/admin/temp-clear-sessions", async (req, res) => {
+  try {
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (!masterAdmin) return res.json({ error: "Not found" });
+
+    const count = masterAdmin.adminSessions?.length || 0;
+    masterAdmin.adminSessions = [];
+    await masterAdmin.save();
+
+    res.json({ success: true, cleared: count });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+
+// CLEANUP - Remove old inactive sessions (older than 1 hour)
+router.post("/admin/cleanup-sessions", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+    
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const beforeCount = masterAdmin.adminSessions.length;
+    
+    // Remove inactive sessions older than 1 hour
+    masterAdmin.adminSessions = masterAdmin.adminSessions.filter(session => {
+      if (session.isActive === false && session.revokedAt) {
+        return new Date(session.revokedAt) > oneHourAgo;
+      }
+      return true;
+    });
+    
+    const afterCount = masterAdmin.adminSessions.length;
+    const cleanedCount = beforeCount - afterCount;
+    
+    await masterAdmin.save();
+    
+    console.log(`🧹 Cleaned up ${cleanedCount} old inactive sessions`);
+    
+    res.json({ 
+      success: true, 
+      cleaned: cleanedCount,
+      remaining: afterCount
+    });
+    
+  } catch (err) {
+    console.error("Error cleaning up sessions:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// CLEAR ALL SESSIONS (Emergency - logs out everyone)
+router.post("/admin/clear-all-sessions", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+    
+    const count = masterAdmin.adminSessions.length;
+    masterAdmin.adminSessions = [];
+    await masterAdmin.save();
+    
+    console.log(`🔴 Cleared ALL ${count} admin sessions`);
+    
+    res.json({ 
+      success: true, 
+      message: `Cleared all ${count} admin sessions`
+    });
+    
+  } catch (err) {
+    console.error("Error clearing all sessions:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// ================= BAN ADMIN USER =================
+router.post("/admin/ban-user", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { sessionId, username, banReason } = req.body;
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    if (!sessionId && !username) {
+      return res.status(400).json({ error: "Session ID or username required" });
+    }
+    
+    let targetUser;
+    
+    // Find user by session ID or username
+    if (sessionId) {
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      if (masterAdmin && masterAdmin.adminSessions) {
+        const session = masterAdmin.adminSessions.find(s => s.sessionId === sessionId);
+        if (session && session.sessionUser) {
+          targetUser = await User.findOne({ username: session.sessionUser });
+        }
+      }
+    }
+    
+    if (!targetUser && username) {
+      targetUser = await User.findOne({ username: username.toLowerCase().trim() });
+    }
+    
+    if (!targetUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    // Can't ban master admin
+    if (targetUser.isMasterAdmin) {
+      return res.status(400).json({ error: "Cannot ban the master admin" });
+    }
+    
+    // Ban the user
+    targetUser.isAdminBanned = true;
+    targetUser.adminBanReason = banReason || "Banned by master admin";
+    targetUser.adminBannedAt = new Date();
+    targetUser.role = "user"; // Demote from admin
+    
+    // Invalidate all their sessions
+    if (targetUser.adminSessions) {
+      targetUser.adminSessions.forEach(s => {
+        s.isActive = false;
+        s.bannedAt = new Date();
+      });
+      targetUser.markModified('adminSessions');
+    }
+    
+    await targetUser.save();
+    
+    // Also remove their sessions from master_admin list
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin && masterAdmin.adminSessions) {
+      masterAdmin.adminSessions = masterAdmin.adminSessions.filter(s => {
+        const shouldKeep = s.sessionUser !== targetUser.username;
+        if (!shouldKeep) {
+          console.log(`Removed session for banned user: ${targetUser.username}`);
+        }
+        return shouldKeep;
+      });
+      masterAdmin.markModified('adminSessions');
+      await masterAdmin.save();
+    }
+    
+    console.log(`🚫 User ${targetUser.username} has been banned from admin panel`);
+    
+    res.json({ 
+      success: true, 
+      message: `${targetUser.username} has been banned from admin panel`,
+      bannedUser: {
+        username: targetUser.username,
+        email: targetUser.email,
+        bannedAt: targetUser.adminBannedAt,
+        reason: targetUser.adminBanReason
+      }
+    });
+    
+  } catch (err) {
+    console.error("Error banning user:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= UNBAN ADMIN USER =================
+router.post("/admin/unban-user", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const { username } = req.body;
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+    
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    user.isAdminBanned = false;
+    user.adminUnbannedAt = new Date();
+    user.role = "admin"; // Restore admin role
+    
+    await user.save();
+    
+    console.log(`✅ User ${user.username} has been unbanned from admin panel`);
+    
+    res.json({ 
+      success: true, 
+      message: `${user.username} has been unbanned and can access admin panel again`
+    });
+    
+  } catch (err) {
+    console.error("Error unbanning user:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET BANNED USERS =================
+router.get("/admin/banned-users", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    const bannedUsers = await User.find({ 
+      isAdminBanned: true 
+    }).select("-password -plainPassword");
+    
+    res.json({ bannedUsers });
+    
+  } catch (err) {
+    console.error("Error fetching banned users:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 export default router;

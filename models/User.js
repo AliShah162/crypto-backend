@@ -6,26 +6,23 @@ const userSchema = new mongoose.Schema({
   password: String,
   plainPassword: { type: String, default: "" },
   
-  isBanned: {
-    type: Boolean,
-    default: false,
-  },
-
+  isBanned: { type: Boolean, default: false }, // User ban (regular users)
+  isAdminBanned: { type: Boolean, default: false }, // Admin ban (for admin users)
+  adminBanReason: { type: String, default: "" },
+  adminBannedAt: { type: Date },
+  adminUnbannedAt: { type: Date },
+  
+  role: { type: String, default: "user", enum: ["user", "admin"] }, // User role
+  
   fullName: String,
   phone: String,
-  country: {
-    type: String,
-    default: "",
-  },
+  country: { type: String, default: "" },
 
   balance: { type: Number, default: 0 },
   creditScore: { type: Number, default: 50 },
 
-  // REMOVED: holdings - replaced with frozenAmounts
-  // REMOVED: binaryTrades (not needed anymore)
-  
-  frozenAmounts: { type: Array, default: [] },  // [{ amount, reason, frozenAt, id }]
-  frozenTotal: { type: Number, default: 0 },    // Total frozen amount
+  frozenAmounts: { type: Array, default: [] },
+  frozenTotal: { type: Number, default: 0 },
   
   transactions: { type: Array, default: [] },
   savedCards: { type: Array, default: [] },
@@ -33,8 +30,10 @@ const userSchema = new mongoose.Schema({
   pendingTrades: { type: Array, default: [] },
   notifications: { type: Array, default: [] },
   depositRequests: { type: Array, default: [] },
-}, {
-  timestamps: true
-});
+  
+  // Admin session tracking
+  adminSessions: { type: Array, default: [] },
+  isMasterAdmin: { type: Boolean, default: false },
+}, { timestamps: true });
 
 export default mongoose.model("User", userSchema);

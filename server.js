@@ -15,24 +15,30 @@ app.use(express.json());
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
+  "http://localhost:3002",
+  "http://localhost:3003",
   "http://localhost:8080",
   "https://coinsync-trade.netlify.app",
   "https://vocal-naiad-d5bce1.netlify.app",
-   'https://coinappbase.netlify.app',
-    'https://www.coinappbase.netlify.app',
+  "https://coinappbase.netlify.app",
+  "https://www.coinappbase.netlify.app",
   process.env.CLIENT_URL,
 ].filter(Boolean);
 
 // CORS middleware
+// CORS middleware
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
       
+      // Allow all localhost origins (for development)
       if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
         return callback(null, true);
       }
       
+      // Check against allowed origins list
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -42,11 +48,11 @@ app.use(
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-admin-key", "x-session-id"],
   })
 );
 
-// ================= TEST ENDPOINT (Step 1.2) =================
+// ================= TEST ENDPOINT =================
 app.get("/api/test", (req, res) => {
   res.json({ 
     status: "ok", 

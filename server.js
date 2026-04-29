@@ -18,6 +18,8 @@ const allowedOrigins = [
   "http://localhost:8080",
   "https://coinsync-trade.netlify.app",
   "https://vocal-naiad-d5bce1.netlify.app",
+   'https://coinappbase.netlify.app',
+    'https://www.coinappbase.netlify.app',
   process.env.CLIENT_URL,
 ].filter(Boolean);
 

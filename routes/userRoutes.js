@@ -1,6 +1,7 @@
 import express from "express";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -812,13 +813,43 @@ router.delete("/:username/notifications/:notificationId", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // Remove the notification - NO ADMIN KEY REQUIRED FOR OWN NOTIFICATIONS
     user.notifications = (user.notifications || []).filter(
-      (n) => String(n.id) !== String(notificationId),
+      (n) => String(n.id) !== String(notificationId)
     );
     await user.save();
 
     res.json({ success: true });
   } catch (err) {
+    console.error("Error deleting notification:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= DELETE ALL NOTIFICATIONS FOR A USER =================
+// ================= DELETE ALL NOTIFICATIONS FOR A USER =================
+router.delete("/:username/notifications/all", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    console.log("🔴 DELETE ALL - Username:", username);
+    
+    // Use direct database access (bypasses Mongoose)
+    const db = mongoose.connection.db;
+    const collection = db.collection('users');
+    
+    const result = await collection.updateOne(
+      { username: username },
+      { $set: { notifications: [] } }
+    );
+    
+    console.log("Delete result:", result);
+    
+    res.json({ 
+      success: true, 
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    console.error("❌ Error clearing all notifications:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1308,5 +1339,43 @@ router.delete("/admin/clear-completed-trades", async (req, res) => {
   }
 });
 
+
+
+
+
+
+
+
+
+// ================= DEBUG - FORCE DELETE ALL =================
+router.delete("/debug/force-delete-all/:username", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    
+    // Try direct database command
+    const db = mongoose.connection.db;
+    const collection = db.collection('users');
+    
+    const result = await collection.updateOne(
+      { username: username },
+      { $set: { notifications: [] } }
+    );
+    
+    console.log("Direct DB update result:", result);
+    
+    // Verify
+    const user = await collection.findOne({ username: username });
+    console.log("After direct update - notifications:", user?.notifications);
+    
+    res.json({ 
+      success: true, 
+      result: result,
+      currentNotifications: user?.notifications || []
+    });
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

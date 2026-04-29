@@ -948,7 +948,10 @@ router.delete("/:username", async (req, res) => {
 router.post("/admin/freeze-balance", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKey = process.env.ADMIN_API_KEY;
+if (!validAdminKey) {
+  return res.status(500).json({ error: "API key not configured" });
+}
 
     if (!adminKey || adminKey !== validAdminKey) {
       return res

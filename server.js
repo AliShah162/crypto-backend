@@ -5,6 +5,13 @@ import dotenv from "dotenv";
 import userRoutes from "./routes/userRoutes.js";
 
 dotenv.config();
+dotenv.config();
+
+// DEBUG - Check if variables are loaded
+console.log("🔍 Checking environment variables:");
+console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
+console.log("MONGO_URI value:", process.env.MONGO_URI ? "SET (hidden)" : "NOT SET");
+console.log("ADMIN_API_KEY exists:", !!process.env.ADMIN_API_KEY);
 
 const app = express();
 

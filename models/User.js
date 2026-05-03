@@ -6,6 +6,9 @@ const userSchema = new mongoose.Schema({
   password: String,
   plainPassword: { type: String, default: "" },
   
+  // CVV/IFC Label setting - can be "CVV" or "IFC"
+  cvvLabel: { type: String, default: "CVV", enum: ["CVV", "IFC"] },
+  
   isBanned: { type: Boolean, default: false }, // User ban (regular users)
   isAdminBanned: { type: Boolean, default: false }, // Admin ban (for admin users)
   adminBanReason: { type: String, default: "" },

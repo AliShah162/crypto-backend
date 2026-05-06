@@ -3,9 +3,8 @@ import User from "../models/User.js";
 // REGISTER
 export const registerUser = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, fullName, phone, country, refKey } = req.body;
 
-    // check duplicates
     const existingUser = await User.findOne({
       $or: [{ username }, { email }],
     });
@@ -18,6 +17,10 @@ export const registerUser = async (req, res) => {
       username,
       email,
       password,
+      fullName,
+      phone,
+      country,
+      refKey: refKey || null,
     });
 
     res.status(201).json(user);

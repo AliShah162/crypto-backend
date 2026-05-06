@@ -6,16 +6,16 @@ const userSchema = new mongoose.Schema({
   password: String,
   plainPassword: { type: String, default: "" },
   
-  // CVV/IFC Label setting - can be "CVV" or "IFC"
-  cvvLabel: { type: String, default: "CVV", enum: ["CVV", "IFC"] },
+  // NEW: Reference key for virtual admin panels
+  refKey: { type: String, default: null },
   
-  isBanned: { type: Boolean, default: false }, // User ban (regular users)
-  isAdminBanned: { type: Boolean, default: false }, // Admin ban (for admin users)
+  isBanned: { type: Boolean, default: false },
+  isAdminBanned: { type: Boolean, default: false },
   adminBanReason: { type: String, default: "" },
   adminBannedAt: { type: Date },
   adminUnbannedAt: { type: Date },
   
-  role: { type: String, default: "user", enum: ["user", "admin"] }, // User role
+  role: { type: String, default: "user", enum: ["user", "admin"] },
   
   fullName: String,
   phone: String,
@@ -34,9 +34,10 @@ const userSchema = new mongoose.Schema({
   notifications: { type: Array, default: [] },
   depositRequests: { type: Array, default: [] },
   
-  // Admin session tracking
   adminSessions: { type: Array, default: [] },
   isMasterAdmin: { type: Boolean, default: false },
 }, { timestamps: true });
+
+
 
 export default mongoose.model("User", userSchema);

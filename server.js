@@ -2,19 +2,23 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import userRoutes from "./routes/userRoutes.js";
 import User from "./models/User.js";
 
 dotenv.config();
 
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // DEBUG - Check if variables are loaded
 console.log("🔍 Checking environment variables:");
 console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
-console.log(
-  "MONGO_URI value:",
-  process.env.MONGO_URI ? "SET (hidden)" : "NOT SET",
-);
 console.log("ADMIN_API_KEY exists:", !!process.env.ADMIN_API_KEY);
+console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME);
+console.log("CLIENT_URL:", process.env.CLIENT_URL || "Not set (using defaults)");
 
 const app = express();
 
@@ -34,7 +38,7 @@ const allowedOrigins = [
   "https://www.coinappbase.netlify.app",
   "https://coinsys.netlify.app",
   process.env.CLIENT_URL,
-].filter(Boolean);
+].filter(Boolean); // Remove undefined values
 
 // CORS middleware
 app.use(
@@ -72,8 +76,8 @@ app.get("/api/test", (req, res) => {
   res.json({
     status: "ok",
     message: "Backend is running!",
-    mongodb:
-      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing",
     timestamp: new Date().toISOString(),
   });
 });
@@ -81,9 +85,14 @@ app.get("/api/test", (req, res) => {
 // ================= ROUTES =================
 app.use("/api/users", userRoutes);
 
-// ================= HEALTH CHECK =================
+// ================= HEALTH CHECK (Root) =================
 app.get("/", (req, res) => {
-  res.send("🚀 Backend Running");
+  res.json({
+    status: "ok",
+    service: "Crypto Backend",
+    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing",
+  });
 });
 
 // ================= START SERVER =================
@@ -97,24 +106,20 @@ mongoose
 
     // ================= ADD refKey FIELD TO EXISTING USERS =================
     try {
-      // Import User model (need to register it first)
       const result = await User.updateMany(
-        { refKey: { $exists: false } }, // ← only update docs missing the field
-        { $set: { refKey: null } },
+        { refKey: { $exists: false } },
+        { $set: { refKey: null } }
       );
       console.log(`✅ refKey field added to ${result.modifiedCount} users`);
     } catch (err) {
       console.log("⚠️ refKey migration note:", err.message);
     }
-    // ================================================================
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(
-        `📍 CORS enabled for origins containing localhost and:`,
-        allowedOrigins,
-      );
+      console.log(`📍 CORS enabled for:`, allowedOrigins);
       console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
+      console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "CONFIGURED ✅" : "MISSING ❌"}`);
     });
   })
   .catch((err) => {

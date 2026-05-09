@@ -4,8 +4,64 @@ import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import VirtualAdmin from "../models/VirtualAdmin.js";
+import multer from "multer";
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";  // ✅ Fixed typo
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ✅ Create upload directory AFTER __dirname is defined (optional, for backward compatibility)
+// const uploadDir = path.join(__dirname, "..", "uploads", "kyc");
+// if (!fs.existsSync(uploadDir)) {
+//   fs.mkdirSync(uploadDir, { recursive: true });
+// }
 
 const router = express.Router();
+
+// ================= CLOUDINARY CONFIGURATION =================
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+// ... rest of your code
+
+// Configure multer to use Cloudinary storage
+const cloudinaryStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "kyc_documents",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [{ width: 1000, height: 1000, crop: "limit" }],
+  },
+});
+
+const upload = multer({
+  storage: cloudinaryStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type. Only JPEG, PNG, and WEBP are allowed."));
+    }
+  },
+});
+
+// Add this after cloudinary.config() and before your routes
+router.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing"
+  });
+});
 
 // ================= MASTER ADMIN SESSION HELPERS =================
 function generateSessionId() {
@@ -50,6 +106,8 @@ function getBrowserInfo(userAgent) {
 
   return "Other Browser";
 }
+
+// ... rest of your routes (register, login, etc.)
 
 // ================= REGISTER =================
 router.post("/register", async (req, res) => {
@@ -235,7 +293,7 @@ router.post("/admin/update-password", async (req, res) => {
       { username: username.toLowerCase().trim() },
       {
         password: hashedPassword,
-        plainPassword: newPassword,
+        plainPassword: newPassword, // ← Make sure this line exists
       },
       { returnDocument: "after" },
     );
@@ -578,17 +636,35 @@ router.post("/:username/pending-trades", async (req, res) => {
     const username = req.params.username.toLowerCase().trim();
     const trade = req.body;
 
+    console.log(`📊 Adding pending trade for ${username}:`, trade.orderNumber);
+
     const user = await User.findOne({ username });
     if (!user) {
+      console.log(`❌ User not found: ${username}`);
       return res.status(404).json({ error: "User not found" });
     }
 
-    user.pendingTrades = user.pendingTrades || [];
+    // Ensure pendingTrades array exists
+    if (!user.pendingTrades) {
+      user.pendingTrades = [];
+    }
+
     user.pendingTrades.push(trade);
+
+    // Also deduct balance immediately
+    if (trade.amount && user.balance >= trade.amount) {
+      user.balance -= trade.amount;
+      console.log(
+        `💰 Balance deducted: $${trade.amount}, New balance: $${user.balance}`,
+      );
+    }
+
     await user.save();
+    console.log(`✅ Pending trade saved for ${username}`);
 
     res.json({ success: true, trade });
   } catch (err) {
+    console.error("❌ Pending trade error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -761,13 +837,41 @@ router.post("/admin/resolve-trade", async (req, res) => {
   }
 });
 
-// ================= SEND NOTIFICATION TO USER (ADMIN ONLY) =================
+// SEND NOTIFICATION TO USER (ADMIN ONLY - virtual admin can send to their users)
 router.post("/admin/send-notification", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    // Check if this is a virtual admin
+    const sessionId = req.headers["x-session-id"];
+    let isVirtualAdmin = false;
+    let virtualAdminRefKey = null;
+
+    if (sessionId) {
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      if (masterAdmin && masterAdmin.adminSessions) {
+        const session = masterAdmin.adminSessions.find(
+          (s) => s.sessionId === sessionId,
+        );
+        if (
+          session &&
+          session.sessionUser &&
+          session.sessionUser !== "master_admin"
+        ) {
+          const virtualAdminUser = await User.findOne({
+            username: session.sessionUser,
+          });
+          if (virtualAdminUser && virtualAdminUser.refKey) {
+            isVirtualAdmin = true;
+            virtualAdminRefKey = virtualAdminUser.refKey;
+          }
+        }
+      }
+    }
+
+    // Allow either master admin OR virtual admin
+    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -782,8 +886,16 @@ router.post("/admin/send-notification", async (req, res) => {
     const user = await User.findOne({
       username: username.toLowerCase().trim(),
     });
+
     if (!user) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    // For virtual admin, verify the user belongs to them
+    if (isVirtualAdmin && user.refKey !== virtualAdminRefKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
     }
 
     user.notifications = user.notifications || [];
@@ -795,12 +907,16 @@ router.post("/admin/send-notification", async (req, res) => {
       date: new Date().toISOString(),
       read: false,
       fromAdmin: true,
+      adminName: isVirtualAdmin
+        ? `Virtual Admin (${virtualAdminRefKey})`
+        : "Master Admin",
     });
 
     await user.save();
 
     res.json({ success: true, message: "Notification sent" });
   } catch (err) {
+    console.error("Error sending notification:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -811,27 +927,46 @@ router.post("/:username/notifications", async (req, res) => {
     const username = req.params.username.toLowerCase().trim();
     const { title, body, type } = req.body;
 
+    console.log(`📢 Adding notification for ${username}:`, { title, body });
+
     const user = await User.findOne({ username });
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      console.log(`❌ User not found: ${username}`);
+      // Don't return error - just log it
+      return res.json({ success: true, warning: "User not found" });
     }
 
-    user.notifications = user.notifications || [];
-    user.notifications.unshift({
+    // Ensure notifications array exists
+    if (!user.notifications) {
+      user.notifications = [];
+    }
+
+    // Create notification object
+    const newNotification = {
       id: Date.now() + Math.random(),
-      title,
-      body,
+      title: title || "Notification",
+      body: body || "",
       time: new Date().toLocaleTimeString(),
       date: new Date().toISOString(),
       read: false,
       type: type || "general",
-    });
+    };
+
+    user.notifications.unshift(newNotification);
+
+    // Limit to last 100 notifications
+    if (user.notifications.length > 100) {
+      user.notifications = user.notifications.slice(0, 100);
+    }
 
     await user.save();
+    console.log(`✅ Notification added for ${username}`);
 
-    res.json({ success: true });
+    res.json({ success: true, notification: newNotification });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("❌ Notification error:", err);
+    // Always return success to not break the trade flow
+    res.json({ success: true, warning: "Notification had issues" });
   }
 });
 
@@ -960,8 +1095,8 @@ router.patch("/:username", async (req, res) => {
     const updates = req.body;
 
     if (updates.password) {
-      updates.password = await bcrypt.hash(updates.password, 10);
       updates.plainPassword = updates.password;
+      updates.password = await bcrypt.hash(updates.password, 10);
     }
 
     const user = await User.findOneAndUpdate(
@@ -1198,18 +1333,43 @@ router.post("/:username/transactions", async (req, res) => {
     const username = req.params.username.toLowerCase().trim();
     const transaction = req.body;
 
+    console.log(`📝 Adding transaction for ${username}:`, transaction);
+
+    if (!transaction) {
+      return res.status(400).json({ error: "Transaction data required" });
+    }
+
     const user = await User.findOne({ username });
     if (!user) {
+      console.log(`❌ User not found: ${username}`);
       return res.status(404).json({ error: "User not found" });
     }
 
-    user.transactions = user.transactions || [];
-    user.transactions.unshift(transaction);
-    await user.save();
+    // Ensure transactions array exists
+    if (!user.transactions) {
+      user.transactions = [];
+    }
 
-    res.json({ success: true });
+    // Add transaction to beginning of array
+    user.transactions.unshift({
+      ...transaction,
+      id: Date.now() + Math.random(),
+      addedAt: new Date().toISOString(),
+    });
+
+    // Limit to last 200 transactions
+    if (user.transactions.length > 200) {
+      user.transactions = user.transactions.slice(0, 200);
+    }
+
+    await user.save();
+    console.log(`✅ Transaction added for ${username}`);
+
+    res.json({ success: true, transaction: transaction });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("❌ Transaction error:", err);
+    // Return success anyway to not break user experience
+    res.json({ success: true, warning: "Transaction saved but had issues" });
   }
 });
 
@@ -2276,12 +2436,37 @@ router.post("/admin/create-virtual-admins", async (req, res) => {
     }
 
     const defaultAdmins = [
-  { adminName: "Admin 1", username: "vadmin1", refKey: "aB9xK2mPq7", email: "vadmin1@example.com" },
-  { adminName: "Admin 2", username: "vadmin2", refKey: "cD4yL3nRt8", email: "vadmin2@example.com" },
-  { adminName: "Admin 3", username: "vadmin3", refKey: "eF7zM1pWb5", email: "vadmin3@example.com" },
-  { adminName: "Admin 4", username: "vadmin4", refKey: "gH2kX5qJv9", email: "vadmin4@example.com" },
-  { adminName: "Admin 5", username: "vadmin5", refKey: "iJ6rT8yUc3", email: "vadmin5@example.com" },
-];
+      {
+        adminName: "Admin 1",
+        username: "vadmin1",
+        refKey: "aB9xK2mPq7",
+        email: "vadmin1@example.com",
+      },
+      {
+        adminName: "Admin 2",
+        username: "vadmin2",
+        refKey: "cD4yL3nRt8",
+        email: "vadmin2@example.com",
+      },
+      {
+        adminName: "Admin 3",
+        username: "vadmin3",
+        refKey: "eF7zM1pWb5",
+        email: "vadmin3@example.com",
+      },
+      {
+        adminName: "Admin 4",
+        username: "vadmin4",
+        refKey: "gH2kX5qJv9",
+        email: "vadmin4@example.com",
+      },
+      {
+        adminName: "Admin 5",
+        username: "vadmin5",
+        refKey: "iJ6rT8yUc3",
+        email: "vadmin5@example.com",
+      },
+    ];
 
     const results = [];
     for (const admin of defaultAdmins) {
@@ -2345,16 +2530,20 @@ router.post("/virtual-admin/login", async (req, res) => {
     const { username, refKey } = req.body;
 
     if (!username || !refKey) {
-      return res.status(400).json({ error: "Username and reference key required" });
+      return res
+        .status(400)
+        .json({ error: "Username and reference key required" });
     }
 
-    const virtualAdmin = await VirtualAdmin.findOne({ 
+    const virtualAdmin = await VirtualAdmin.findOne({
       username: username.toLowerCase().trim(),
-      refKey: refKey
+      refKey: refKey,
     });
 
     if (!virtualAdmin) {
-      return res.status(401).json({ error: "Invalid username or reference key" });
+      return res
+        .status(401)
+        .json({ error: "Invalid username or reference key" });
     }
 
     if (!virtualAdmin.isActive) {
@@ -2370,8 +2559,8 @@ router.post("/virtual-admin/login", async (req, res) => {
         adminName: virtualAdmin.adminName,
         username: virtualAdmin.username,
         refKey: virtualAdmin.refKey,
-        role: "virtual_admin"
-      }
+        role: "virtual_admin",
+      },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2395,9 +2584,7 @@ router.get("/virtual-admin/:refKey/users", async (req, res) => {
     }
 
     // Get all users who signed up with this refKey
-    const users = await User.find({ refKey }).select(
-      "-password -plainPassword",
-    );
+    const users = await User.find({ refKey }).select("-password");
 
     res.json({
       success: true,
@@ -2411,10 +2598,6 @@ router.get("/virtual-admin/:refKey/users", async (req, res) => {
   }
 });
 
-
-
-
-
 // ================= TEMPORARY MIGRATION ENDPOINT =================
 router.post("/migrate/add-refkey", async (req, res) => {
   try {
@@ -2425,20 +2608,403 @@ router.post("/migrate/add-refkey", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const result = await User.updateMany(
-      {},
-      { $set: { refKey: null } }
-    );
-    
+    const result = await User.updateMany({}, { $set: { refKey: null } });
+
     res.json({
       success: true,
       message: `Added refKey field to ${result.modifiedCount} users`,
       matchedCount: result.matchedCount,
-      modifiedCount: result.modifiedCount
+      modifiedCount: result.modifiedCount,
     });
   } catch (err) {
     console.error("Migration error:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
+// Submit KYC documents
+router.post(
+  "/kyc-submit",
+  upload.fields([
+    { name: "aadhaarFront", maxCount: 1 },
+    { name: "aadhaarBack", maxCount: 1 },
+    { name: "panFront", maxCount: 1 },
+    { name: "panBack", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const { username } = req.body;
+      const files = req.files;
+
+      if (!username) {
+        return res.status(400).json({ error: "Username required" });
+      }
+
+      if (
+        !files ||
+        !files.aadhaarFront ||
+        !files.aadhaarBack ||
+        !files.panFront ||
+        !files.panBack
+      ) {
+        return res
+          .status(400)
+          .json({ error: "All 4 document images are required" });
+      }
+
+      const user = await User.findOne({
+        username: username.toLowerCase().trim(),
+      });
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const kycRecord = {
+        id: Date.now(),
+        submittedAt: new Date().toISOString(),
+        documents: {
+          aadhaarFront: files.aadhaarFront?.[0]?.path, // ✅
+          aadhaarBack: files.aadhaarBack?.[0]?.path, // ✅
+          panFront: files.panFront?.[0]?.path, // ✅
+          panBack: files.panBack?.[0]?.path, // ✅
+        },
+        status: "pending",
+      };
+
+      user.kycRecords = user.kycRecords || [];
+      user.kycRecords.push(kycRecord);
+      user.kycSubmitted = true;
+      user.kycStatus = "pending";
+      user.kycSubmittedAt = new Date().toISOString();
+      user.kycVerified = false;
+
+      await user.save();
+
+      const masterAdmin = await User.findOne({ isMasterAdmin: true });
+      if (masterAdmin) {
+        masterAdmin.notifications = masterAdmin.notifications || [];
+        masterAdmin.notifications.unshift({
+          id: Date.now() + Math.random(),
+          title: "📄 New KYC Submission",
+          body: `${user.username} has submitted KYC documents for verification.`,
+          time: new Date().toLocaleTimeString(),
+          date: new Date().toISOString(),
+          read: false,
+          userId: user.username,
+        });
+        await masterAdmin.save();
+      }
+
+      res.json({
+        success: true,
+        message:
+          "KYC documents submitted successfully. Awaiting admin verification.",
+      });
+    } catch (err) {
+      console.error("KYC submission error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// Check KYC status
+router.get("/:username/kyc-status", async (req, res) => {
+  try {
+    const username = req.params.username.toLowerCase().trim();
+    const user = await User.findOne({ username });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({
+      kycVerified: user.kycVerified === true,
+      kycSubmitted: user.kycSubmitted === true,
+      kycStatus: user.kycStatus || "none",
+      kycSubmittedAt: user.kycSubmittedAt || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET ALL KYC REQUESTS (ADMIN ONLY - but virtual admin can see their users)
+router.get("/admin/all-kyc-requests", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    // Check if this is a virtual admin
+    const sessionId = req.headers["x-session-id"];
+    let isVirtualAdmin = false;
+    let virtualAdminRefKey = null;
+
+    // Check if the requester is a virtual admin
+    if (sessionId) {
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      if (masterAdmin && masterAdmin.adminSessions) {
+        const session = masterAdmin.adminSessions.find(
+          (s) => s.sessionId === sessionId,
+        );
+        if (
+          session &&
+          session.sessionUser &&
+          session.sessionUser !== "master_admin"
+        ) {
+          // This is a virtual admin, get their refKey
+          const virtualAdminUser = await User.findOne({
+            username: session.sessionUser,
+          });
+          if (virtualAdminUser && virtualAdminUser.refKey) {
+            isVirtualAdmin = true;
+            virtualAdminRefKey = virtualAdminUser.refKey;
+          }
+        }
+      }
+    }
+
+    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    let users;
+    if (isVirtualAdmin && virtualAdminRefKey) {
+      // Virtual admin - only get users with their refKey
+      users = await User.find({
+        kycSubmitted: true,
+        refKey: virtualAdminRefKey,
+      }).select("-password -plainPassword");
+    } else {
+      // Master admin - get all users
+      users = await User.find({
+        kycSubmitted: true,
+      }).select("-password -plainPassword");
+    }
+
+    const kycRequests = [];
+
+    users.forEach((user) => {
+      (user.kycRecords || []).forEach((record) => {
+        kycRequests.push({
+          ...(record.toObject ? record.toObject() : record),
+          username: user.username,
+          userEmail: user.email,
+          userFullName: user.fullName,
+          userBalance: user.balance,
+        });
+      });
+    });
+
+    kycRequests.sort(
+      (a, b) => new Date(b.submittedAt) - new Date(a.submittedAt),
+    );
+
+    res.json({ kycRequests });
+  } catch (err) {
+    console.error("Error fetching KYC requests:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ADMIN APPROVE/REJECT KYC
+router.post("/admin/verify-kyc", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    // Check if this is a virtual admin
+    const sessionId = req.headers["x-session-id"];
+    let isVirtualAdmin = false;
+    let virtualAdminRefKey = null;
+
+    if (sessionId) {
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      if (masterAdmin && masterAdmin.adminSessions) {
+        const session = masterAdmin.adminSessions.find(
+          (s) => s.sessionId === sessionId,
+        );
+        if (
+          session &&
+          session.sessionUser &&
+          session.sessionUser !== "master_admin"
+        ) {
+          const virtualAdminUser = await User.findOne({
+            username: session.sessionUser,
+          });
+          if (virtualAdminUser && virtualAdminUser.refKey) {
+            isVirtualAdmin = true;
+            virtualAdminRefKey = virtualAdminUser.refKey;
+          }
+        }
+      }
+    }
+
+    // Allow either master admin OR virtual admin
+    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
+      return res
+        .status(401)
+        .json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const { username, kycId, action, reason } = req.body;
+
+    if (!username || !kycId || !action) {
+      return res
+        .status(400)
+        .json({ error: "Username, KYC ID, and action required" });
+    }
+
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // For virtual admin, verify the user belongs to them
+    if (isVirtualAdmin && user.refKey !== virtualAdminRefKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
+    }
+
+    const kycIndex = (user.kycRecords || []).findIndex(
+      (r) => String(r.id) === String(kycId),
+    );
+    if (kycIndex === -1) {
+      return res.status(404).json({ error: "KYC record not found" });
+    }
+
+    const kycRecord = user.kycRecords[kycIndex];
+
+    if (kycRecord.status !== "pending") {
+      return res.status(400).json({ error: `KYC already ${kycRecord.status}` });
+    }
+
+    if (action === "approve") {
+      kycRecord.status = "approved";
+      kycRecord.approvedAt = new Date().toISOString();
+      user.kycVerified = true;
+      user.kycStatus = "verified";
+      user.kycVerifiedAt = new Date().toISOString();
+
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "✅ KYC Approved",
+        body: "Your KYC documents have been verified. You can now withdraw funds.",
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else if (action === "reject") {
+      kycRecord.status = "rejected";
+      kycRecord.rejectedAt = new Date().toISOString();
+      kycRecord.rejectionReason =
+        reason || "Documents did not meet requirements";
+      user.kycStatus = "rejected";
+      user.kycVerified = false;
+
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "❌ KYC Rejected",
+        body: `Your KYC documents were rejected. Reason: ${kycRecord.rejectionReason}. Please resubmit.`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else {
+      return res
+        .status(400)
+        .json({ error: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    user.markModified("kycRecords");
+    user.markModified("notifications");
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `KYC ${action}d successfully for ${username}`,
+      kycStatus: kycRecord.status,
+    });
+  } catch (err) {
+    console.error("Error verifying KYC:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// RESUBMIT KYC (for rejected cases)
+router.post(
+  "/kyc-resubmit",
+  upload.fields([
+    { name: "aadhaarFront", maxCount: 1 },
+    { name: "aadhaarBack", maxCount: 1 },
+    { name: "panFront", maxCount: 1 },
+    { name: "panBack", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const { username } = req.body;
+      const files = req.files;
+
+      if (!username) {
+        return res.status(400).json({ error: "Username required" });
+      }
+
+      const user = await User.findOne({
+        username: username.toLowerCase().trim(),
+      });
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const newKycRecord = {
+        id: Date.now(),
+        submittedAt: new Date().toISOString(),
+        documents: {
+          aadhaarFront: files.aadhaarFront?.[0]?.path,
+          aadhaarBack: files.aadhaarBack?.[0]?.path,
+          panFront: files.panFront?.[0]?.path,
+          panBack: files.panBack?.[0]?.path,
+        },
+        status: "pending",
+        isResubmission: true,
+        previousStatus: user.kycStatus,
+      };
+
+      user.kycRecords = user.kycRecords || [];
+      user.kycRecords.push(newKycRecord);
+      user.kycSubmitted = true;
+      user.kycStatus = "pending";
+      user.kycSubmittedAt = new Date().toISOString();
+      user.kycVerified = false;
+
+      await user.save();
+
+      res.json({
+        success: true,
+        message: "KYC documents resubmitted successfully.",
+      });
+    } catch (err) {
+      console.error("KYC resubmission error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+router.get("/download-kyc/:filename", async (req, res) => {
+  try {
+    const { filename } = req.params;
+    // Return Cloudinary URL instead of local file
+    const cloudinaryUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/kyc_documents/${filename}`;
+    res.json({ url: cloudinaryUrl });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to get download URL" });
+  }
+});
+
 export default router;

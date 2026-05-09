@@ -1,7 +1,7 @@
 {
   "name": "cryptobackened",
   "version": "1.0.0",
-  "description": "",
+  "description": "Backend for crypto trading platform with Cloudinary KYC integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,13 +12,16 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "mongoose": "^9.4.1"
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^1.41.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^8.9.5",
+    "multer": "^1.4.5-lts.1",
+    "multer-storage-cloudinary": "^4.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.9"
   }
 }

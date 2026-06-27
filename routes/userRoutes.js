@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from "express";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
@@ -21,14 +23,152 @@ const __dirname = path.dirname(__filename);
 // }
 
 const router = express.Router();
+const validateAdminSession = async (req, res, next) => {
+  try {
+    // ✅ FIRST: Check if this is a virtual admin request
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    
+    // Check admin key first
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ 
+        error: "Unauthorized", 
+        message: "Invalid admin key" 
+      });
+    }
 
-// ================= CLOUDINARY CONFIGURATION =================
+    // ✅ Check for virtual admin access via refKey in query or body
+    const refKey = req.query.refKey || req.body.refKey;
+    
+    if (refKey) {
+      // Validate the refKey
+      const VirtualAdmin = mongoose.model("VirtualAdmin");
+      const virtualAdmin = await VirtualAdmin.findOne({ refKey });
+      
+      if (!virtualAdmin) {
+        return res.status(403).json({ 
+          error: "Unauthorized", 
+          message: "Invalid virtual admin reference key" 
+        });
+      }
+      
+      if (!virtualAdmin.isActive) {
+        return res.status(403).json({ 
+          error: "ADMIN_DISABLED", 
+          message: "Virtual admin account is disabled" 
+        });
+      }
+      
+      // Attach virtual admin info to request
+      req.sessionInfo = {
+        isVirtual: true,
+        refKey: refKey,
+        virtualAdmin: virtualAdmin,
+        sessionUser: virtualAdmin.username,
+      };
+      
+      return next(); // ✅ Allow virtual admin to proceed
+    }
+
+    // ✅ If no refKey, check session for master admin
+    const sessionId = req.headers["x-session-id"];
+    
+    if (!sessionId) {
+      return res.status(401).json({ 
+        error: "SESSION_INVALID", 
+        message: "No session ID provided" 
+      });
+    }
+
+    // Find master admin and validate session
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    
+    if (!masterAdmin || !masterAdmin.adminSessions) {
+      return res.status(401).json({ 
+        error: "SESSION_INVALID", 
+        message: "No active sessions found" 
+      });
+    }
+
+    const sessionIndex = masterAdmin.adminSessions.findIndex(
+      (s) => s.sessionId === sessionId
+    );
+
+    if (sessionIndex === -1) {
+      return res.status(401).json({ 
+        error: "SESSION_INVALID", 
+        message: "Session not found" 
+      });
+    }
+
+    const session = masterAdmin.adminSessions[sessionIndex];
+
+    if (session.isActive === false) {
+      return res.status(403).json({ 
+        error: "SESSION_REVOKED", 
+        message: "Your session has been revoked by the master admin" 
+      });
+    }
+
+    // Check if the session user is banned
+    if (session.sessionUser && session.sessionUser !== "master_admin") {
+      const user = await User.findOne({ username: session.sessionUser });
+      if (user && user.isAdminBanned) {
+        return res.status(403).json({ 
+          error: "ADMIN_BANNED", 
+          message: "You have been banned from the admin panel",
+          reason: user.adminBanReason,
+          bannedAt: user.adminBannedAt
+        });
+      }
+    }
+
+    // Update lastActiveAt
+    masterAdmin.adminSessions[sessionIndex].lastActiveAt = new Date();
+    masterAdmin.markModified("adminSessions");
+    
+    await User.findOneAndUpdate(
+      { username: "master_admin" },
+      { $set: { adminSessions: masterAdmin.adminSessions } }
+    );
+
+    // Attach session info
+    req.sessionInfo = {
+      sessionId: sessionId,
+      sessionUser: session.sessionUser,
+      isVirtual: session.sessionUser && session.sessionUser !== "master_admin",
+      refKey: null
+    };
+
+    // If virtual admin, get their refKey
+    if (req.sessionInfo.isVirtual) {
+      const virtualAdminUser = await User.findOne({ 
+        username: session.sessionUser 
+      });
+      if (virtualAdminUser) {
+        req.sessionInfo.refKey = virtualAdminUser.refKey;
+        req.sessionInfo.virtualAdminUser = virtualAdminUser;
+      }
+    }
+
+    next();
+  } catch (err) {
+    console.error("Session validation error:", err);
+    return res.status(500).json({ 
+      error: "SESSION_ERROR", 
+      message: "Error validating session" 
+    });
+  }
+};
+
+// ================= NOW ALL YOUR ROUTES GO HERE =================
+// CLOUDINARY CONFIGURATION
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-// ... rest of your code
+
 
 // Configure multer to use Cloudinary storage
 const cloudinaryStorage = new CloudinaryStorage({
@@ -400,108 +540,30 @@ router.post("/withdraw", async (req, res) => {
   }
 });
 
-// ================= ADMIN APPROVE WITHDRAWAL =================
-router.post("/admin/approve-withdrawal", async (req, res) => {
+
+
+// ================= GET ALL WITHDRAWAL REQUESTS (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.get("/admin/all-withdrawals", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    const { username, requestId, action } = req.body;
+    const sessionInfo = req.sessionInfo;
+    let users;
 
-    const user = await User.findOne({
-      username: username.toLowerCase().trim(),
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const requestIndex = user.withdrawalRequests.findIndex(
-      (r) => String(r.id) === String(requestId),
-    );
-    if (requestIndex === -1) {
-      return res.status(404).json({ error: "Withdrawal request not found" });
-    }
-
-    const request = user.withdrawalRequests[requestIndex];
-
-    if (request.status !== "pending") {
-      return res
-        .status(400)
-        .json({ error: `Request already ${request.status}` });
-    }
-
-    if (action === "approve") {
-      if (user.balance < request.amount) {
-        return res
-          .status(400)
-          .json({ error: "Insufficient balance for approval" });
-      }
-      user.balance -= request.amount;
-
-      request.status = "approved";
-      request.approvedAt = new Date().toISOString();
-
-      const txIndex = user.transactions.findIndex(
-        (t) => t.date === request.date,
-      );
-      if (txIndex !== -1) {
-        user.transactions[txIndex].status = "approved";
-        user.transactions[txIndex].approvedAt = new Date().toISOString();
-      }
-    } else if (action === "reject") {
-      request.status = "rejected";
-      request.rejectedAt = new Date().toISOString();
-
-      const txIndex = user.transactions.findIndex(
-        (t) => t.date === request.date,
-      );
-      if (txIndex !== -1) {
-        user.transactions[txIndex].status = "rejected";
-        user.transactions[txIndex].rejectedAt = new Date().toISOString();
-      }
+    if (sessionInfo.isVirtual && sessionInfo.refKey) {
+      // Virtual admin - only get users with their refKey
+      users = await User.find({ refKey: sessionInfo.refKey });
     } else {
-      return res
-        .status(400)
-        .json({ error: "Invalid action. Use 'approve' or 'reject'" });
+      // Master admin - get all users
+      users = await User.find({});
     }
 
-    user.markModified("withdrawalRequests");
-    user.markModified("transactions");
-
-    await user.save();
-
-    res.json({
-      success: true,
-      message: `Withdrawal ${action}d successfully`,
-      newBalance: user.balance,
-      requestStatus: request.status,
-    });
-  } catch (err) {
-    console.error("Error in approve-withdrawal:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================= GET ALL WITHDRAWAL REQUESTS (ADMIN ONLY) =================
-router.get("/admin/all-withdrawals", async (req, res) => {
-  try {
-    const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
-
-    if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
-    }
-
-    const users = await User.find({});
     const allWithdrawals = [];
 
     users.forEach((user) => {
@@ -519,7 +581,140 @@ router.get("/admin/all-withdrawals", async (req, res) => {
 
     res.json(allWithdrawals);
   } catch (err) {
+    console.error("Error fetching withdrawals:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ================= ADMIN APPROVE/REJECT WITHDRAWAL (WITH VIRTUAL ADMIN SECURITY) =================
+router.post("/admin/approve-withdrawal", validateAdminSession, async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
+    }
+
+    const sessionInfo = req.sessionInfo;
+    const { username, requestId, action } = req.body;
+
+    if (!username || !requestId || !action) {
+      return res.status(400).json({ error: "Username, requestId, and action are required" });
+    }
+
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // If virtual admin, verify the user belongs to them
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
+    }
+
+    // Find the withdrawal request
+    const requestIndex = (user.withdrawalRequests || []).findIndex(
+      (r) => String(r.id) === String(requestId),
+    );
+    
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Withdrawal request not found" });
+    }
+
+    const request = user.withdrawalRequests[requestIndex];
+
+    // ✅ Check if already processed
+    if (request.status !== "pending") {
+      return res.status(400).json({ 
+        error: `Request already ${request.status}`,
+        status: request.status
+      });
+    }
+
+    if (action === "approve") {
+      // Check if user has enough balance
+      if (user.balance < request.amount) {
+        return res.status(400).json({ 
+          error: `Insufficient balance. User has $${user.balance}, requested $${request.amount}` 
+        });
+      }
+
+      // Deduct the amount from user's balance
+      user.balance = parseFloat((user.balance - request.amount).toFixed(2));
+      
+      request.status = "approved";
+      request.approvedAt = new Date().toISOString();
+
+      // Add to transactions
+      user.transactions = [
+        {
+          type: "Withdraw",
+          amount: request.amount,
+          usd: request.amount,
+          date: new Date().toISOString(),
+          status: "approved",
+          note: "Withdrawal approved",
+          cardLast4: request.cardLast4 || "****",
+          holderName: request.holderName || "",
+          bankName: request.bankName || "",
+        },
+        ...(user.transactions || []),
+      ];
+
+      // Send notification
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "✅ Withdrawal Approved",
+        body: `Your withdrawal of $${request.amount} has been approved and processed.`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+
+    } else if (action === "reject") {
+      request.status = "rejected";
+      request.rejectedAt = new Date().toISOString();
+
+      // Send notification
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "❌ Withdrawal Rejected",
+        body: `Your withdrawal of $${request.amount} has been rejected. Please contact support.`,
+        time: new Date().toLocaleTimeString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else {
+      return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    user.markModified("withdrawalRequests");
+    user.markModified("transactions");
+    user.markModified("notifications");
+    await user.save();
+
+    // ✅ Return success with clear message
+    res.json({
+      success: true,
+      message: `Withdrawal ${action}d successfully`,
+      newBalance: user.balance,
+      requestStatus: request.status,
+    });
+  } catch (err) {
+    console.error("Error in approve-withdrawal:", err);
+    res.status(500).json({ 
+      error: err.message || "Internal server error",
+      success: false 
+    });
   }
 });
 
@@ -597,19 +792,28 @@ router.get("/:username/binary-trades", async (req, res) => {
   }
 });
 
-// ================= GET ALL TRADES (ADMIN ONLY) - returns ALL trades with status =================
-router.get("/admin/all-trades", async (req, res) => {
+// ================= GET ALL TRADES (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.get("/admin/all-trades", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    const users = await User.find({});
+    const sessionInfo = req.sessionInfo;
+    let users;
+
+    if (sessionInfo.isVirtual && sessionInfo.refKey) {
+      // Virtual admin - only get users with their refKey
+      users = await User.find({ refKey: sessionInfo.refKey });
+    } else {
+      // Master admin - get all users
+      users = await User.find({});
+    }
+
     const allTrades = [];
 
     users.forEach((user) => {
@@ -626,6 +830,7 @@ router.get("/admin/all-trades", async (req, res) => {
     allTrades.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
     res.json(allTrades);
   } catch (err) {
+    console.error("Error fetching trades:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -669,18 +874,18 @@ router.post("/:username/pending-trades", async (req, res) => {
   }
 });
 
-// ================= ADMIN RESOLVE TRADE (WIN/LOSS/FREEZE) - WITH BALANCE CHANGE =================
-router.post("/admin/resolve-trade", async (req, res) => {
+// ================= ADMIN RESOLVE TRADE (WIN/LOSS/FREEZE) - WITH VIRTUAL ADMIN SECURITY =================
+router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
+    const sessionInfo = req.sessionInfo;
     const { username, tradeId, action } = req.body;
 
     if (!username || !tradeId || !action) {
@@ -694,6 +899,13 @@ router.post("/admin/resolve-trade", async (req, res) => {
     });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    // If virtual admin, verify the user belongs to them
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
     }
 
     const tradeIndex = (user.pendingTrades || []).findIndex(
@@ -725,7 +937,7 @@ router.post("/admin/resolve-trade", async (req, res) => {
       trade.profitAmount = profitAmount;
       resultMessage = `WIN! +$${profitAmount.toFixed(2)} profit added. Total: +$${totalReturn.toFixed(2)}`;
     } else if (action === "loss") {
-      newBalance = user.balance - trade.amount;
+      newBalance = parseFloat((user.balance - trade.amount).toFixed(2));
       trade.status = "lost";
       trade.resolvedAt = new Date().toISOString();
       trade.result = "LOSS";
@@ -837,46 +1049,18 @@ router.post("/admin/resolve-trade", async (req, res) => {
   }
 });
 
-// SEND NOTIFICATION TO USER (ADMIN ONLY - virtual admin can send to their users)
-router.post("/admin/send-notification", async (req, res) => {
+// ================= SEND NOTIFICATION TO USER (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.post("/admin/send-notification", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
-    // Check if this is a virtual admin
-    const sessionId = req.headers["x-session-id"];
-    let isVirtualAdmin = false;
-    let virtualAdminRefKey = null;
-
-    if (sessionId) {
-      const masterAdmin = await User.findOne({ username: "master_admin" });
-      if (masterAdmin && masterAdmin.adminSessions) {
-        const session = masterAdmin.adminSessions.find(
-          (s) => s.sessionId === sessionId,
-        );
-        if (
-          session &&
-          session.sessionUser &&
-          session.sessionUser !== "master_admin"
-        ) {
-          const virtualAdminUser = await User.findOne({
-            username: session.sessionUser,
-          });
-          if (virtualAdminUser && virtualAdminUser.refKey) {
-            isVirtualAdmin = true;
-            virtualAdminRefKey = virtualAdminUser.refKey;
-          }
-        }
-      }
+    // Check admin key
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    // Allow either master admin OR virtual admin
-    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
-    }
-
+    const sessionInfo = req.sessionInfo;
     const { username, title, body } = req.body;
 
     if (!username || !title) {
@@ -892,7 +1076,7 @@ router.post("/admin/send-notification", async (req, res) => {
     }
 
     // For virtual admin, verify the user belongs to them
-    if (isVirtualAdmin && user.refKey !== virtualAdminRefKey) {
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
       return res.status(403).json({
         error: "Unauthorized. This user is not under your management.",
       });
@@ -907,8 +1091,8 @@ router.post("/admin/send-notification", async (req, res) => {
       date: new Date().toISOString(),
       read: false,
       fromAdmin: true,
-      adminName: isVirtualAdmin
-        ? `Virtual Admin (${virtualAdminRefKey})`
+      adminName: sessionInfo.isVirtual
+        ? `Virtual Admin (${sessionInfo.refKey})`
         : "Master Admin",
     });
 
@@ -1153,21 +1337,18 @@ router.delete("/:username", async (req, res) => {
   }
 });
 
-// ================= ADMIN FREEZE / UNFREEZE USER BALANCE (NO NOTIFICATIONS) =================
-router.post("/admin/freeze-balance", async (req, res) => {
+// ================= ADMIN FREEZE / UNFREEZE USER BALANCE (WITH VIRTUAL ADMIN SUPPORT) =================
+router.post("/admin/freeze-balance", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY;
-    if (!validAdminKey) {
-      return res.status(500).json({ error: "API key not configured" });
-    }
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
+    const sessionInfo = req.sessionInfo;
     const { username, amount, action, reason } = req.body;
 
     if (!username || !amount || !action) {
@@ -1181,6 +1362,13 @@ router.post("/admin/freeze-balance", async (req, res) => {
     });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    // If virtual admin, verify the user belongs to them
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
     }
 
     const freezeAmount = parseFloat(amount);
@@ -1209,9 +1397,6 @@ router.post("/admin/freeze-balance", async (req, res) => {
       user.frozenAmounts.push(freezeEntry);
       user.frozenTotal = (user.frozenTotal || 0) + freezeAmount;
 
-      // NO transactions added
-      // NO notifications sent
-
       await user.save();
 
       res.json({
@@ -1238,9 +1423,6 @@ router.post("/admin/freeze-balance", async (req, res) => {
         user.balance += unfreezeAmount;
         user.frozenAmounts.splice(freezeIndex, 1);
         user.frozenTotal = (user.frozenTotal || 0) - unfreezeAmount;
-
-        // NO transactions added
-        // NO notifications sent
 
         await user.save();
 
@@ -1283,9 +1465,6 @@ router.post("/admin/freeze-balance", async (req, res) => {
         user.balance += unfrozenAmount;
         user.frozenAmounts = newFrozenAmounts;
         user.frozenTotal = (user.frozenTotal || 0) - unfrozenAmount;
-
-        // NO transactions added
-        // NO notifications sent
 
         await user.save();
 
@@ -1413,19 +1592,28 @@ router.post("/deposit-request", async (req, res) => {
   }
 });
 
-// ================= GET ALL DEPOSIT REQUESTS (ADMIN ONLY) =================
-router.get("/admin/all-deposits", async (req, res) => {
+// ================= GET ALL DEPOSIT REQUESTS (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.get("/admin/all-deposits", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    const users = await User.find({});
+    const sessionInfo = req.sessionInfo;
+    let users;
+
+    if (sessionInfo.isVirtual && sessionInfo.refKey) {
+      // Virtual admin - only get users with their refKey
+      users = await User.find({ refKey: sessionInfo.refKey });
+    } else {
+      // Master admin - get all users
+      users = await User.find({});
+    }
+
     const allDeposits = [];
 
     users.forEach((user) => {
@@ -1442,22 +1630,23 @@ router.get("/admin/all-deposits", async (req, res) => {
     allDeposits.sort((a, b) => new Date(b.date) - new Date(a.date));
     res.json(allDeposits);
   } catch (err) {
+    console.error("Error fetching deposits:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ================= ADMIN APPROVE/REJECT DEPOSIT =================
-router.post("/admin/approve-deposit", async (req, res) => {
+// ================= ADMIN APPROVE/REJECT DEPOSIT (WITH VIRTUAL ADMIN SECURITY) =================
+router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
+    const sessionInfo = req.sessionInfo;
     const { username, requestId, action } = req.body;
 
     const user = await User.findOne({
@@ -1465,6 +1654,13 @@ router.post("/admin/approve-deposit", async (req, res) => {
     });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    // If virtual admin, verify the user belongs to them
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
     }
 
     const requestIndex = (user.depositRequests || []).findIndex(
@@ -1545,20 +1741,28 @@ router.post("/admin/approve-deposit", async (req, res) => {
   }
 });
 
-// ================= CLEAR COMPLETED TRADES ONLY (ADMIN ONLY) =================
-router.delete("/admin/clear-completed-trades", async (req, res) => {
+// ================= CLEAR COMPLETED TRADES ONLY (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.delete("/admin/clear-completed-trades", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    // Get all users
-    const users = await User.find({});
+    const sessionInfo = req.sessionInfo;
+    let users;
+
+    if (sessionInfo.isVirtual && sessionInfo.refKey) {
+      // Virtual admin - only clear trades for their users
+      users = await User.find({ refKey: sessionInfo.refKey });
+    } else {
+      // Master admin - clear for all users
+      users = await User.find({});
+    }
+
     let totalCleared = 0;
 
     for (const user of users) {
@@ -1621,7 +1825,7 @@ router.delete("/debug/force-delete-all/:username", async (req, res) => {
 // REGISTER ADMIN SESSION - Called when admin panel loads
 router.post("/admin/register-session", async (req, res) => {
   try {
-    const { adminKey, userAgent, adminUsername } = req.body; // ADD adminUsername
+    const { adminKey, userAgent, adminUsername } = req.body;
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
     if (!adminKey || adminKey !== validAdminKey) {
@@ -1633,39 +1837,40 @@ router.post("/admin/register-session", async (req, res) => {
     const deviceInfo = getDeviceInfo(userAgent);
     const browser = getBrowserInfo(userAgent);
 
-    // Find or create master admin user
-    let masterAdmin = await User.findOne({ username: "master_admin" });
-
-    if (!masterAdmin) {
-      masterAdmin = new User({
-        username: "master_admin",
-        email: "master@admin.local",
-        isMasterAdmin: true,
-        adminSessions: [],
-      });
-    }
-
-    // Ensure adminSessions array exists
-    if (!masterAdmin.adminSessions) masterAdmin.adminSessions = [];
-
-    // Add new session - STORE THE ADMIN USERNAME
-    masterAdmin.adminSessions.push({
-      sessionId,
-      ipAddress: ipAddress,
-      userAgent: userAgent || "Unknown",
-      deviceInfo: `${browser} - ${deviceInfo}`,
-      loggedInAt: new Date(),
-      lastActiveAt: new Date(),
-      isActive: true,
-      sessionUser: adminUsername || "master_admin", // USE THE PROVIDED USERNAME
-    });
+    // ✅ Use findOneAndUpdate with $push to avoid version conflicts
+    const masterAdmin = await User.findOneAndUpdate(
+      { username: "master_admin" },
+      {
+        $set: { isMasterAdmin: true },
+        $push: {
+          adminSessions: {
+            sessionId,
+            ipAddress: ipAddress,
+            userAgent: userAgent || "Unknown",
+            deviceInfo: `${browser} - ${deviceInfo}`,
+            loggedInAt: new Date(),
+            lastActiveAt: new Date(),
+            isActive: true,
+            sessionUser: adminUsername || "master_admin",
+          }
+        }
+      },
+      { 
+        new: true,
+        upsert: true,
+        // ✅ Prevent version conflicts
+        setDefaultsOnInsert: true
+      }
+    );
 
     // Keep only last 50 sessions
     if (masterAdmin.adminSessions.length > 50) {
       masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-50);
+      await User.findOneAndUpdate(
+        { username: "master_admin" },
+        { $set: { adminSessions: masterAdmin.adminSessions } }
+      );
     }
-
-    await masterAdmin.save();
 
     res.json({
       success: true,
@@ -1721,21 +1926,18 @@ router.post("/admin/session-heartbeat", async (req, res) => {
       return res.status(400).json({ error: "Session ID required" });
     }
 
-    const masterAdmin = await User.findOne({
-      username: "master_admin",
-      "adminSessions.sessionId": sessionId,
-      "adminSessions.isActive": true,
-    });
-
-    if (masterAdmin) {
-      const session = masterAdmin.adminSessions.find(
-        (s) => s.sessionId === sessionId,
-      );
-      if (session) {
-        session.lastActiveAt = new Date();
-        await masterAdmin.save();
-      }
-    }
+    // ✅ Use findOneAndUpdate to avoid version conflicts
+    const result = await User.findOneAndUpdate(
+      { 
+        username: "master_admin",
+        "adminSessions.sessionId": sessionId,
+        "adminSessions.isActive": true
+      },
+      { 
+        $set: { "adminSessions.$.lastActiveAt": new Date() }
+      },
+      { new: true }
+    );
 
     res.json({ success: true });
   } catch (err) {
@@ -1755,29 +1957,37 @@ router.delete("/admin/sessions/:sessionId", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const masterAdmin = await User.findOne({ username: "master_admin" });
+    // ✅ Use findOneAndUpdate to avoid version conflicts
+    const masterAdmin = await User.findOneAndUpdate(
+      { 
+        username: "master_admin",
+        "adminSessions.sessionId": sessionId
+      },
+      { 
+        $set: { 
+          "adminSessions.$.isActive": false,
+          "adminSessions.$.kickedAt": new Date()
+        }
+      },
+      { new: true }
+    );
 
     if (!masterAdmin) {
       return res.status(404).json({ error: "Master admin not found" });
     }
 
-    // Find and mark session as inactive
-    const session = masterAdmin.adminSessions.find(
-      (s) => s.sessionId === sessionId,
+    // Also add to kicked sessions list
+    await User.findOneAndUpdate(
+      { username: "master_admin" },
+      { 
+        $push: { 
+          kickedSessions: {
+            sessionId: sessionId,
+            kickedAt: new Date()
+          }
+        }
+      }
     );
-    if (session) {
-      session.isActive = false;
-      session.kickedAt = new Date();
-      await masterAdmin.save();
-    }
-
-    // Also add to a kicked sessions list for real-time check
-    if (!masterAdmin.kickedSessions) masterAdmin.kickedSessions = [];
-    masterAdmin.kickedSessions.push({
-      sessionId: sessionId,
-      kickedAt: new Date(),
-    });
-    await masterAdmin.save();
 
     res.json({
       success: true,
@@ -2728,53 +2938,25 @@ router.get("/:username/kyc-status", async (req, res) => {
   }
 });
 
-// GET ALL KYC REQUESTS (ADMIN ONLY - but virtual admin can see their users)
-router.get("/admin/all-kyc-requests", async (req, res) => {
+// ================= GET ALL KYC REQUESTS (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
+router.get("/admin/all-kyc-requests", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
-    // Check if this is a virtual admin
-    const sessionId = req.headers["x-session-id"];
-    let isVirtualAdmin = false;
-    let virtualAdminRefKey = null;
-
-    // Check if the requester is a virtual admin
-    if (sessionId) {
-      const masterAdmin = await User.findOne({ username: "master_admin" });
-      if (masterAdmin && masterAdmin.adminSessions) {
-        const session = masterAdmin.adminSessions.find(
-          (s) => s.sessionId === sessionId,
-        );
-        if (
-          session &&
-          session.sessionUser &&
-          session.sessionUser !== "master_admin"
-        ) {
-          // This is a virtual admin, get their refKey
-          const virtualAdminUser = await User.findOne({
-            username: session.sessionUser,
-          });
-          if (virtualAdminUser && virtualAdminUser.refKey) {
-            isVirtualAdmin = true;
-            virtualAdminRefKey = virtualAdminUser.refKey;
-          }
-        }
-      }
+    // Check admin key
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
-    }
-
+    const sessionInfo = req.sessionInfo;
     let users;
-    if (isVirtualAdmin && virtualAdminRefKey) {
+
+    if (sessionInfo.isVirtual && sessionInfo.refKey) {
       // Virtual admin - only get users with their refKey
       users = await User.find({
         kycSubmitted: true,
-        refKey: virtualAdminRefKey,
+        refKey: sessionInfo.refKey,
       }).select("-password -plainPassword");
     } else {
       // Master admin - get all users
@@ -2808,46 +2990,18 @@ router.get("/admin/all-kyc-requests", async (req, res) => {
   }
 });
 
-// ADMIN APPROVE/REJECT KYC
-router.post("/admin/verify-kyc", async (req, res) => {
+// ================= ADMIN APPROVE/REJECT KYC (WITH VIRTUAL ADMIN SUPPORT) =================
+router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
-    // Check if this is a virtual admin
-    const sessionId = req.headers["x-session-id"];
-    let isVirtualAdmin = false;
-    let virtualAdminRefKey = null;
-
-    if (sessionId) {
-      const masterAdmin = await User.findOne({ username: "master_admin" });
-      if (masterAdmin && masterAdmin.adminSessions) {
-        const session = masterAdmin.adminSessions.find(
-          (s) => s.sessionId === sessionId,
-        );
-        if (
-          session &&
-          session.sessionUser &&
-          session.sessionUser !== "master_admin"
-        ) {
-          const virtualAdminUser = await User.findOne({
-            username: session.sessionUser,
-          });
-          if (virtualAdminUser && virtualAdminUser.refKey) {
-            isVirtualAdmin = true;
-            virtualAdminRefKey = virtualAdminUser.refKey;
-          }
-        }
-      }
+    // Check admin key
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
-    // Allow either master admin OR virtual admin
-    if (!adminKey || (adminKey !== validAdminKey && !isVirtualAdmin)) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
-    }
-
+    const sessionInfo = req.sessionInfo;
     const { username, kycId, action, reason } = req.body;
 
     if (!username || !kycId || !action) {
@@ -2864,7 +3018,7 @@ router.post("/admin/verify-kyc", async (req, res) => {
     }
 
     // For virtual admin, verify the user belongs to them
-    if (isVirtualAdmin && user.refKey !== virtualAdminRefKey) {
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
       return res.status(403).json({
         error: "Unauthorized. This user is not under your management.",
       });
@@ -3004,6 +3158,377 @@ router.get("/download-kyc/:filename", async (req, res) => {
     res.json({ url: cloudinaryUrl });
   } catch (err) {
     res.status(500).json({ error: "Failed to get download URL" });
+  }
+});
+
+
+
+// ================= SESSION VALIDATION ENDPOINT (For frontend to check) =================
+router.get("/admin/validate-session", validateAdminSession, async (req, res) => {
+  try {
+    const sessionInfo = req.sessionInfo;
+    
+    res.json({
+      valid: true,
+      sessionUser: sessionInfo.sessionUser,
+      isVirtual: sessionInfo.isVirtual,
+      refKey: sessionInfo.refKey,
+      message: "Session is valid"
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// ================= CHANGE VIRTUAL ADMIN PASSWORD (Master Admin Only) =================
+router.post("/admin/change-virtual-admin-password", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { username, newPassword } = req.body;
+
+    if (!username || !newPassword) {
+      return res.status(400).json({ error: "Username and newPassword required" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    // Check if this is a virtual admin
+    const virtualAdmin = await VirtualAdmin.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+
+    if (!virtualAdmin) {
+      return res.status(404).json({ error: "Virtual admin not found" });
+    }
+
+    // Hash the new password (if you're storing hashed passwords for virtual admins)
+    // If you're storing plain text, skip bcrypt
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the virtual admin's password
+    // Note: If VirtualAdmin model doesn't have a password field, add it!
+    virtualAdmin.password = hashedPassword;
+    virtualAdmin.plainPassword = newPassword; // Store plain text for display (optional)
+    virtualAdmin.passwordUpdatedAt = new Date();
+    virtualAdmin.passwordUpdatedBy = "master_admin";
+
+    await virtualAdmin.save();
+
+    // Also update the user account if it exists
+    const user = await User.findOne({ 
+      username: username.toLowerCase().trim(),
+      role: "admin"
+    });
+
+    if (user) {
+      user.password = hashedPassword;
+      user.plainPassword = newPassword;
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Password for ${username} updated successfully`
+    });
+  } catch (err) {
+    console.error("Error changing virtual admin password:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// ============================================================
+// ================= VIRTUAL ADMIN MANAGEMENT =================
+// ============================================================
+
+// ================= KICK VIRTUAL ADMIN =================
+// Add this AFTER the existing virtual admin routes and BEFORE export default router
+router.post("/admin/kick-virtual-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+
+    // Find the virtual admin
+    const virtualAdmin = await VirtualAdmin.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+
+    if (!virtualAdmin) {
+      return res.status(404).json({ error: "Virtual admin not found" });
+    }
+
+    // Mark as inactive temporarily (kicked)
+    virtualAdmin.isActive = false;
+    virtualAdmin.lastKickedAt = new Date();
+    await virtualAdmin.save();
+
+    // Also remove any active sessions for this user from master_admin
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin && masterAdmin.adminSessions) {
+      masterAdmin.adminSessions = masterAdmin.adminSessions.filter(
+        (s) => s.sessionUser !== username
+      );
+      await masterAdmin.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Virtual admin @${username} has been kicked out`,
+    });
+  } catch (err) {
+    console.error("Error kicking virtual admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= BAN VIRTUAL ADMIN =================
+router.post("/admin/ban-virtual-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { username, banReason, sessionId } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+
+    // Find the virtual admin
+    const virtualAdmin = await VirtualAdmin.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+
+    if (!virtualAdmin) {
+      return res.status(404).json({ error: "Virtual admin not found" });
+    }
+
+    // Ban the virtual admin
+    virtualAdmin.isActive = false;
+    virtualAdmin.isBanned = true;
+    virtualAdmin.banReason = banReason || "No reason provided";
+    virtualAdmin.bannedAt = new Date();
+    virtualAdmin.bannedBy = "master_admin";
+    await virtualAdmin.save();
+
+    // Also update the user record if it exists
+    const user = await User.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+    if (user) {
+      user.isAdminBanned = true;
+      user.adminBanReason = banReason || "No reason provided";
+      user.adminBannedAt = new Date();
+      user.role = "user"; // Demote from admin
+      await user.save();
+    }
+
+    // Remove any active sessions
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin && masterAdmin.adminSessions) {
+      masterAdmin.adminSessions = masterAdmin.adminSessions.filter(
+        (s) => s.sessionUser !== username
+      );
+      await masterAdmin.save();
+    }
+
+    // Also add to banned admins list in master admin
+    if (masterAdmin) {
+      if (!masterAdmin.bannedAdmins) masterAdmin.bannedAdmins = [];
+      masterAdmin.bannedAdmins.push({
+        adminUsername: virtualAdmin.username,
+        adminEmail: virtualAdmin.email,
+        bannedAt: new Date(),
+        bannedBy: "master_admin",
+        banReason: banReason || "No reason provided",
+        isVirtualAdmin: true,
+      });
+      await masterAdmin.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Virtual admin @${username} has been banned`,
+      bannedAdmin: {
+        username: virtualAdmin.username,
+        email: virtualAdmin.email,
+        bannedAt: virtualAdmin.bannedAt,
+        reason: virtualAdmin.banReason,
+      },
+    });
+  } catch (err) {
+    console.error("Error banning virtual admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= UNBAN VIRTUAL ADMIN =================
+router.post("/admin/unban-virtual-admin", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+
+    // Find the virtual admin
+    const virtualAdmin = await VirtualAdmin.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+
+    if (!virtualAdmin) {
+      return res.status(404).json({ error: "Virtual admin not found" });
+    }
+
+    // Unban the virtual admin
+    virtualAdmin.isActive = true;
+    virtualAdmin.isBanned = false;
+    virtualAdmin.unbannedAt = new Date();
+    virtualAdmin.unbannedBy = "master_admin";
+    await virtualAdmin.save();
+
+    // Also update the user record if it exists
+    const user = await User.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+    if (user) {
+      user.isAdminBanned = false;
+      user.adminUnbannedAt = new Date();
+      user.role = "admin"; // Restore admin role
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Virtual admin @${username} has been unbanned`,
+    });
+  } catch (err) {
+    console.error("Error unbanning virtual admin:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET BANNED VIRTUAL ADMINS =================
+router.get("/admin/banned-virtual-admins", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const bannedVirtualAdmins = await VirtualAdmin.find({ 
+      isBanned: true 
+    }).sort({ bannedAt: -1 });
+
+    res.json({ bannedVirtualAdmins });
+  } catch (err) {
+    console.error("Error fetching banned virtual admins:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= CHANGE VIRTUAL ADMIN PASSWORD =================
+router.post("/admin/change-virtual-admin-password", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { username, newPassword } = req.body;
+
+    if (!username || !newPassword) {
+      return res.status(400).json({ error: "Username and newPassword required" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    // Check if this is a virtual admin
+    const virtualAdmin = await VirtualAdmin.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+
+    if (!virtualAdmin) {
+      return res.status(404).json({ error: "Virtual admin not found" });
+    }
+
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the virtual admin's password
+    virtualAdmin.password = hashedPassword;
+    virtualAdmin.plainPassword = newPassword;
+    virtualAdmin.passwordUpdatedAt = new Date();
+    virtualAdmin.passwordUpdatedBy = "master_admin";
+    await virtualAdmin.save();
+
+    // Also update the user account if it exists
+    const user = await User.findOne({ 
+      username: username.toLowerCase().trim(),
+      role: "admin"
+    });
+
+    if (user) {
+      user.password = hashedPassword;
+      user.plainPassword = newPassword;
+      await user.save();
+    }
+
+    // Also update any virtual admin user record
+    const userAccount = await User.findOne({ 
+      username: username.toLowerCase().trim() 
+    });
+    if (userAccount) {
+      userAccount.password = hashedPassword;
+      userAccount.plainPassword = newPassword;
+      await userAccount.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Password for ${username} updated successfully`,
+    });
+  } catch (err) {
+    console.error("Error changing virtual admin password:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -40,10 +40,10 @@ const allowedOrigins = [
   "https://frolicking-dango-7ddebf.netlify.app",
   "https://leafy-youtiao-3df249.netlify.app",
   "https://crypto-app-fe.vercel.app",
-  // Keep the generic Vercel check or add specific URLs
+  "https://crypto-app-fe-psi.vercel.app", // ✅ Added your new URL
   "crypto-app-al90uwh8i-alishah162s-projects.vercel.app",
   process.env.CLIENT_URL,
-].filter(Boolean); // Remove undefined values
+].filter(Boolean); // Remove undefined values // Remove undefined values
 
 // CORS middleware
 app.use(

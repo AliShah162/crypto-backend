@@ -38,6 +38,7 @@ const allowedOrigins = [
   "https://www.coinappbase.netlify.app",
   "https://coinsys.netlify.app",
   "https://frolicking-dango-7ddebf.netlify.app",
+  "https://leafy-youtiao-3df249.netlify.app",
   process.env.CLIENT_URL,
 ].filter(Boolean); // Remove undefined values
 

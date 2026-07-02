@@ -15,6 +15,17 @@ const virtualAdminSchema = new mongoose.Schema({
   // ===== STATUS FIELDS =====
   isActive: { type: Boolean, default: true },
   lastLogin: { type: Date },
+  // ✅ ADD THESE FIELDS
+  isBanned: { type: Boolean, default: false },
+  banReason: { type: String },
+  bannedAt: { type: Date },
+  bannedBy: { type: String },
+  unbannedAt: { type: Date },
+  unbannedBy: { type: String },
+  lastKickedAt: { type: Date, default: null },
+  
+  // ✅ ADD THIS - Custom name for display
+  customName: { type: String, default: null },
   
 }, { timestamps: true });
 

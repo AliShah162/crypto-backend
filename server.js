@@ -42,6 +42,7 @@ const allowedOrigins = [
   "https://crypto-app-fe.vercel.app",
   "https://crypto-app-fe-psi.vercel.app", // ✅ Added your new URL
   "crypto-app-al90uwh8i-alishah162s-projects.vercel.app",
+  "https://crypto-app-nu5jxf0ib-fryejacob679-9040s-projects.vercel.app",
   process.env.CLIENT_URL,
 ].filter(Boolean); // Remove undefined values // Remove undefined values
 

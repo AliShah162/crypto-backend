@@ -1976,6 +1976,8 @@ router.get("/admin/sessions", async (req, res) => {
   }
 });
 
+// userRoutes.js - Update the session heartbeat endpoint
+
 // SESSION HEARTBEAT - Keep session alive
 router.post("/admin/session-heartbeat", async (req, res) => {
   try {
@@ -1985,7 +1987,7 @@ router.post("/admin/session-heartbeat", async (req, res) => {
       return res.status(400).json({ error: "Session ID required" });
     }
 
-    // ✅ Use findOneAndUpdate to avoid version conflicts
+    // ✅ Update lastActiveAt for this session
     const result = await User.findOneAndUpdate(
       { 
         username: "master_admin",
@@ -1998,7 +2000,31 @@ router.post("/admin/session-heartbeat", async (req, res) => {
       { new: true }
     );
 
-    res.json({ success: true });
+    if (result) {
+      res.json({ success: true });
+    } else {
+      // ✅ If session not found in master_admin, it might be a virtual admin session
+      // Try to find and update the virtual admin's lastActiveAt
+      const virtualAdmin = await VirtualAdmin.findOne({
+        "sessions.sessionId": sessionId,
+        "sessions.isActive": true
+      });
+      
+      if (virtualAdmin) {
+        const sessionIndex = virtualAdmin.sessions.findIndex(
+          (s) => s.sessionId === sessionId
+        );
+        if (sessionIndex !== -1) {
+          virtualAdmin.sessions[sessionIndex].lastActiveAt = new Date();
+          virtualAdmin.markModified("sessions");
+          await virtualAdmin.save();
+          res.json({ success: true });
+          return;
+        }
+      }
+      
+      res.status(404).json({ error: "Session not found" });
+    }
   } catch (err) {
     console.error("Error updating session heartbeat:", err);
     res.status(500).json({ error: err.message });
@@ -2793,10 +2819,13 @@ router.get("/admin/virtual-admins", async (req, res) => {
   }
 });
 
-// ================= VIRTUAL ADMIN LOGIN =================
+// userRoutes.js - FIXED Virtual Admin Login
+
 router.post("/virtual-admin/login", async (req, res) => {
   try {
     const { username, refKey } = req.body;
+
+    console.log("🔵 Login attempt:", { username, refKey });
 
     if (!username || !refKey) {
       return res
@@ -2804,25 +2833,64 @@ router.post("/virtual-admin/login", async (req, res) => {
         .json({ error: "Username and reference key required" });
     }
 
-    // ✅ First try to find by username and refKey
-    let virtualAdmin = await VirtualAdmin.findOne({
-      username: username.toLowerCase().trim(),
-      refKey: refKey,
-    });
+    const cleanUsername = username.toLowerCase().trim();
+    const cleanInput = refKey.trim();
 
-    // ✅ If not found, try using plainPassword as the password
-    if (!virtualAdmin) {
-      virtualAdmin = await VirtualAdmin.findOne({
-        username: username.toLowerCase().trim(),
-        plainPassword: refKey,
-      });
-    }
+    // ✅ Find the vadmin by username
+    const candidate = await VirtualAdmin.findOne({ username: cleanUsername });
 
-    if (!virtualAdmin) {
+    if (!candidate) {
+      console.log(`❌ No vadmin found with username: "${cleanUsername}"`);
       return res
         .status(401)
         .json({ error: "Invalid username or reference key" });
     }
+
+    console.log("🔵 Found candidate:", {
+      username: candidate.username,
+      refKey: candidate.refKey,
+      plainPassword: candidate.plainPassword,
+      isActive: candidate.isActive,
+      isBanned: candidate.isBanned,
+    });
+
+    // ✅ Check if refKey matches (case insensitive)
+    const refKeyMatches = candidate.refKey?.toLowerCase() === cleanInput.toLowerCase();
+    const plainPasswordMatches = candidate.plainPassword?.toLowerCase() === cleanInput.toLowerCase();
+
+    // ✅ Also check exact match (for case-sensitive passwords)
+    const refKeyExact = candidate.refKey === cleanInput;
+    const plainPasswordExact = candidate.plainPassword === cleanInput;
+
+    // ✅ Check hashed password as fallback
+    let hashedPasswordMatches = false;
+    if (!refKeyMatches && !plainPasswordMatches && candidate.password) {
+      try {
+        hashedPasswordMatches = await bcrypt.compare(cleanInput, candidate.password);
+      } catch (e) {
+        hashedPasswordMatches = false;
+      }
+    }
+
+    const isValid = refKeyMatches || plainPasswordMatches || refKeyExact || plainPasswordExact || hashedPasswordMatches;
+
+    console.log("🔵 Validation results:", {
+      refKeyMatches,
+      plainPasswordMatches,
+      refKeyExact,
+      plainPasswordExact,
+      hashedPasswordMatches,
+      isValid
+    });
+
+    if (!isValid) {
+      console.log(`❌ Credential mismatch for "${cleanUsername}"`);
+      return res
+        .status(401)
+        .json({ error: "Invalid username or reference key" });
+    }
+
+    let virtualAdmin = candidate;
 
     // ✅ CHECK IF BANNED
     if (virtualAdmin.isBanned) {
@@ -2847,7 +2915,7 @@ router.post("/virtual-admin/login", async (req, res) => {
         });
       } else {
         await VirtualAdmin.findOneAndUpdate(
-          { username: username.toLowerCase().trim() },
+          { username: cleanUsername },
           { $unset: { lastKickedAt: "" } }
         );
       }
@@ -2856,7 +2924,7 @@ router.post("/virtual-admin/login", async (req, res) => {
     // ✅ AUTO-ACTIVATE
     if (!virtualAdmin.isActive && !virtualAdmin.isBanned) {
       await VirtualAdmin.findOneAndUpdate(
-        { username: username.toLowerCase().trim() },
+        { username: cleanUsername },
         { $set: { isActive: true } }
       );
     }
@@ -2871,70 +2939,60 @@ router.post("/virtual-admin/login", async (req, res) => {
 
     // ✅ Get fresh data
     const freshAdmin = await VirtualAdmin.findOne({
-      username: username.toLowerCase().trim(),
+      username: cleanUsername,
     });
 
-    // ✅ REGISTER SESSION FOR VIRTUAL ADMIN - WITH DEBUG LOGGING
+    // ✅ REGISTER SESSION
     console.log(`🔵 Creating session for virtual admin: ${freshAdmin.username}`);
     
+    let sessionId = null;
     try {
-      const sessionId = generateSessionId();
+      sessionId = generateSessionId();
       const ipAddress = getClientIp(req);
       const deviceInfo = getDeviceInfo(req.headers["user-agent"]);
       const browser = getBrowserInfo(req.headers["user-agent"]);
 
-      // ✅ Find master admin
       const masterAdmin = await User.findOne({ username: "master_admin" });
       
-      if (!masterAdmin) {
-        console.error("❌ Master admin not found!");
-        // Continue login even if session can't be created
-      } else {
-        // ✅ Make sure adminSessions array exists
+      if (masterAdmin) {
         if (!masterAdmin.adminSessions) {
           masterAdmin.adminSessions = [];
         }
 
-        // ✅ Check for existing active session for this vadmin
-        const existingSession = masterAdmin.adminSessions.find(
-          (s) => s.sessionUser === freshAdmin.username && s.isActive !== false
+        const priorNamedSessions = masterAdmin.adminSessions.filter(
+          (s) =>
+            s.sessionUser === freshAdmin.username &&
+            s.ipAddress === ipAddress &&
+            s.customName
         );
+        priorNamedSessions.sort(
+          (a, b) => new Date(b.lastActiveAt || b.loggedInAt) - new Date(a.lastActiveAt || a.loggedInAt)
+        );
+        const inheritedCustomName = priorNamedSessions[0]?.customName || null;
 
-        if (existingSession) {
-          console.log(`ℹ️ Active session already exists for: ${freshAdmin.username}, updating it`);
-          // Update existing session
-          existingSession.lastActiveAt = new Date();
-          existingSession.ipAddress = ipAddress;
-          existingSession.deviceInfo = `${browser} - ${deviceInfo}`;
-          existingSession.userAgent = req.headers["user-agent"] || "Unknown";
-          await masterAdmin.save();
-        } else {
-          // ✅ Create new session
-          const newSession = {
-            sessionId: sessionId,
-            ipAddress: ipAddress,
-            userAgent: req.headers["user-agent"] || "Unknown",
-            deviceInfo: `${browser} - ${deviceInfo}`,
-            loggedInAt: new Date(),
-            lastActiveAt: new Date(),
-            isActive: true,
-            sessionUser: freshAdmin.username, // ✅ THIS IS CRITICAL
-            customName: freshAdmin.customName || null,
-          };
-          
-          masterAdmin.adminSessions.push(newSession);
-          await masterAdmin.save();
-          console.log(`✅ Session created for virtual admin: ${freshAdmin.username}, SessionId: ${sessionId}`);
-          console.log(`📊 Total sessions now: ${masterAdmin.adminSessions.length}`);
-        }
+        const newSession = {
+          sessionId: sessionId,
+          ipAddress: ipAddress,
+          userAgent: req.headers["user-agent"] || "Unknown",
+          deviceInfo: `${browser} - ${deviceInfo}`,
+          loggedInAt: new Date(),
+          lastActiveAt: new Date(),
+          isActive: true,
+          sessionUser: freshAdmin.username,
+          customName: inheritedCustomName,
+        };
+
+        masterAdmin.adminSessions.push(newSession);
+        await masterAdmin.save();
+        console.log(`✅ Session created for: ${freshAdmin.username}`);
       }
     } catch (err) {
-      console.error("❌ Error registering virtual admin session:", err);
-      // Continue login even if session creation fails
+      console.error("❌ Session registration error:", err);
     }
 
     res.json({
       success: true,
+      sessionId: sessionId,
       admin: {
         adminName: freshAdmin.adminName,
         username: freshAdmin.username,
@@ -2948,7 +3006,6 @@ router.post("/virtual-admin/login", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 // GET USERS FOR SPECIFIC VIRTUAL ADMIN (by refKey)
 router.get("/virtual-admin/:refKey/users", async (req, res) => {
   try {
@@ -3835,7 +3892,9 @@ router.post("/admin/rename-session", async (req, res) => {
 
 
 
-// ================= RENAME ALL SESSIONS BY IP (Master Admin Only) =================
+// userRoutes.js - Add this endpoint if not already there
+
+// ================= RENAME ALL SESSIONS BY IP =================
 router.post("/admin/rename-sessions-by-ip", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
@@ -3857,12 +3916,12 @@ router.post("/admin/rename-sessions-by-ip", async (req, res) => {
       return res.status(404).json({ error: "Master admin not found" });
     }
 
-    // Find all sessions with this IP
+    // Find all active sessions with this IP
     let renamedCount = 0;
     const updatedSessions = [];
 
     masterAdmin.adminSessions.forEach((session, index) => {
-      if (session.ipAddress === ipAddress) {
+      if (session.ipAddress === ipAddress && session.isActive !== false) {
         masterAdmin.adminSessions[index].customName = customName || null;
         updatedSessions.push({
           sessionId: session.sessionId,
@@ -3874,7 +3933,7 @@ router.post("/admin/rename-sessions-by-ip", async (req, res) => {
     });
 
     if (renamedCount === 0) {
-      return res.status(404).json({ error: "No sessions found with this IP" });
+      return res.status(404).json({ error: "No active sessions found with this IP" });
     }
 
     masterAdmin.markModified("adminSessions");
@@ -4139,6 +4198,131 @@ router.get("/admin/banned-virtual-admins", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching banned virtual admins:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// userRoutes.js - Add this new endpoint
+
+// ================= RENAME ALL SESSIONS BY USER AND IP =================
+router.post("/admin/rename-sessions-by-user-and-ip", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Master admin only." });
+    }
+
+    const { ipAddress, sessionUser, customName } = req.body;
+
+    if (!ipAddress) {
+      return res.status(400).json({ error: "IP Address required" });
+    }
+
+    if (!sessionUser) {
+      return res.status(400).json({ error: "Session User required" });
+    }
+
+    // Find master admin
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+
+    // ✅ Find ONLY sessions with THIS IP AND THIS USER
+    let renamedCount = 0;
+    const updatedSessions = [];
+
+    masterAdmin.adminSessions.forEach((session, index) => {
+      if (
+        session.ipAddress === ipAddress &&
+        session.sessionUser === sessionUser && // ✅ CRITICAL: Same user
+        session.isActive !== false
+      ) {
+        masterAdmin.adminSessions[index].customName = customName || null;
+        updatedSessions.push({
+          sessionId: session.sessionId,
+          deviceInfo: session.deviceInfo,
+          customName: customName || null
+        });
+        renamedCount++;
+      }
+    });
+
+    if (renamedCount === 0) {
+      return res.status(404).json({ 
+        error: `No active sessions found for @${sessionUser} with IP ${ipAddress}` 
+      });
+    }
+
+    masterAdmin.markModified("adminSessions");
+    await masterAdmin.save();
+
+    res.json({
+      success: true,
+      message: `Renamed ${renamedCount} sessions for @${sessionUser} with IP ${ipAddress}`,
+      renamedCount: renamedCount,
+      sessions: updatedSessions
+    });
+  } catch (err) {
+    console.error("Error renaming sessions by user and IP:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// userRoutes.js - Add this debug endpoint
+
+router.post("/debug/vadmin-login-check", async (req, res) => {
+  try {
+    const { username, refKey } = req.body;
+    
+    const cleanUsername = username.toLowerCase().trim();
+    const cleanInput = refKey.trim();
+    
+    const candidate = await VirtualAdmin.findOne({ username: cleanUsername });
+    
+    if (!candidate) {
+      return res.json({
+        success: false,
+        error: "User not found",
+        username: cleanUsername
+      });
+    }
+    
+    const refKeyMatches = candidate.refKey === cleanInput;
+    const plainPasswordMatches = candidate.plainPassword === cleanInput;
+    const refKeyCaseInsensitive = candidate.refKey?.toLowerCase() === cleanInput.toLowerCase();
+    const plainPasswordCaseInsensitive = candidate.plainPassword?.toLowerCase() === cleanInput.toLowerCase();
+    
+    return res.json({
+      success: true,
+      user: {
+        username: candidate.username,
+        refKey: candidate.refKey,
+        plainPassword: candidate.plainPassword,
+      },
+      input: {
+        username: cleanUsername,
+        refKey: cleanInput,
+      },
+      matches: {
+        refKeyMatches,
+        plainPasswordMatches,
+        refKeyCaseInsensitive,
+        plainPasswordCaseInsensitive,
+      },
+      conclusion: refKeyMatches || plainPasswordMatches || refKeyCaseInsensitive || plainPasswordCaseInsensitive
+        ? "✅ Should login successfully"
+        : "❌ No match found"
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

@@ -257,6 +257,8 @@ function getBrowserInfo(userAgent) {
 // ... rest of your routes (register, login, etc.)
 
 // ================= REGISTER =================
+// userRoutes.js - Update the registration endpoint
+
 router.post("/register", async (req, res) => {
   try {
     const { username, email, password, fullName, phone, country, refKey } =
@@ -281,6 +283,32 @@ router.post("/register", async (req, res) => {
         .json({ error: "Username or email already exists" });
     }
 
+    // ✅ VALIDATE REFKEY IF PROVIDED
+    let validatedRefKey = null;
+    if (refKey && refKey.trim() !== "") {
+      const cleanRefKey = refKey.trim();
+      
+      // Check if this refKey exists in VirtualAdmin
+      const virtualAdmin = await VirtualAdmin.findOne({ refKey: cleanRefKey });
+      
+      if (!virtualAdmin) {
+        return res.status(400).json({ 
+          error: "Invalid reference key. Please check with your admin.",
+          code: "INVALID_REFKEY"
+        });
+      }
+      
+      // Check if virtual admin is active and not banned
+      if (!virtualAdmin.isActive || virtualAdmin.isBanned) {
+        return res.status(400).json({ 
+          error: "This reference key is currently inactive or banned. Please contact support.",
+          code: "INACTIVE_REFKEY"
+        });
+      }
+      
+      validatedRefKey = cleanRefKey;
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
@@ -291,7 +319,7 @@ router.post("/register", async (req, res) => {
       fullName: fullName || "",
       phone: phone || "",
       country: country || "",
-      refKey: refKey || null,
+      refKey: validatedRefKey, // ✅ Use validated refKey or null
       withdrawalRequests: [],
       pendingTrades: [],
       notifications: [],
@@ -3382,7 +3410,8 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
 
 
 
-// ================= CHANGE VIRTUAL ADMIN PASSWORD (FIXED) =================
+// userRoutes.js - Update the change-virtual-admin-password endpoint
+
 router.post("/admin/change-virtual-admin-password", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
@@ -3392,7 +3421,7 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
-    const { username, newPassword } = req.body;
+    const { username, newPassword, customRefKey } = req.body;
 
     if (!username || !newPassword) {
       return res.status(400).json({ error: "Username and newPassword required" });
@@ -3411,25 +3440,47 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
       return res.status(404).json({ error: "Virtual admin not found" });
     }
 
-    // ✅ Store the OLD refKey before updating
+    // Store the OLD refKey before updating
     const oldRefKey = virtualAdmin.refKey;
     console.log(`📌 Old refKey for ${username}: "${oldRefKey}"`);
 
-    // Generate a new refKey
-    const generateRefKey = () => {
-      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-      let result = '';
-      for (let i = 0; i < 10; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-      return result;
-    };
-
-    let newRefKey = generateRefKey();
-    let existing = await VirtualAdmin.findOne({ refKey: newRefKey });
-    while (existing) {
+    // Generate a new refKey or use custom one
+    let newRefKey = customRefKey;
+    
+    if (!newRefKey || newRefKey.trim() === "") {
+      // Auto-generate if no custom refKey provided
+      const generateRefKey = () => {
+        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let result = '';
+        for (let i = 0; i < 10; i++) {
+          result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
+      };
+      
       newRefKey = generateRefKey();
-      existing = await VirtualAdmin.findOne({ refKey: newRefKey });
+      let existing = await VirtualAdmin.findOne({ refKey: newRefKey });
+      while (existing) {
+        newRefKey = generateRefKey();
+        existing = await VirtualAdmin.findOne({ refKey: newRefKey });
+      }
+    } else {
+      // Validate custom refKey
+      if (newRefKey.length < 4) {
+        return res.status(400).json({ error: "Reference Key must be at least 4 characters" });
+      }
+      if (!/^[a-zA-Z0-9]+$/.test(newRefKey)) {
+        return res.status(400).json({ error: "Reference Key can only contain letters and numbers" });
+      }
+      
+      // Check if custom refKey is already taken
+      const existing = await VirtualAdmin.findOne({ 
+        refKey: newRefKey,
+        username: { $ne: username.toLowerCase().trim() }
+      });
+      if (existing) {
+        return res.status(400).json({ error: "This Reference Key is already in use by another admin" });
+      }
     }
 
     console.log(`📌 New refKey for ${username}: "${newRefKey}"`);
@@ -3437,7 +3488,7 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
     // Hash the new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // ✅ Update virtual admin with new refKey
+    // Update virtual admin with new refKey
     virtualAdmin.refKey = newRefKey;
     virtualAdmin.password = hashedPassword;
     virtualAdmin.plainPassword = newPassword;
@@ -3445,13 +3496,12 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
     virtualAdmin.passwordUpdatedBy = "master_admin";
     await virtualAdmin.save();
 
-    // ✅ CRITICAL FIX: Update ALL users with the OLD refKey to use the NEW refKey
-    // Using case-insensitive and trim for safety
+    // CRITICAL FIX: Update ALL users with the OLD refKey to use the NEW refKey
     const userUpdateResult = await User.updateMany(
       { 
         $or: [
           { refKey: oldRefKey },
-          { refKey: { $regex: new RegExp(`^${oldRefKey}$`, 'i') } } // Case-insensitive match
+          { refKey: { $regex: new RegExp(`^${oldRefKey}$`, 'i') } }
         ]
       },
       { $set: { refKey: newRefKey } }
@@ -3459,8 +3509,7 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
 
     console.log(`✅ Updated ${userUpdateResult.modifiedCount} users from old refKey to new refKey`);
 
-    // ✅ ALSO fix users with no refKey or null refKey (assign them to this admin)
-    // This handles edge cases where users were created without a refKey
+    // ALSO fix users with no refKey or null refKey (assign them to this admin)
     const nullRefKeyUpdate = await User.updateMany(
       { 
         $or: [
@@ -3476,10 +3525,9 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
       console.log(`✅ Also fixed ${nullRefKeyUpdate.modifiedCount} users with null refKey`);
     }
 
-    // ✅ Also update the user account if it exists (for the admin user itself)
+    // Also update the user account if it exists
     const user = await User.findOne({ 
-      username: username.toLowerCase().trim(),
-      role: "admin"
+      username: username.toLowerCase().trim()
     });
     if (user) {
       user.password = hashedPassword;
@@ -3488,34 +3536,13 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
       await user.save();
     }
 
-    // ✅ Also update any regular user account with this username
-    const userAccount = await User.findOne({ 
-      username: username.toLowerCase().trim() 
-    });
-    if (userAccount && userAccount.username !== username.toLowerCase().trim()) {
-      userAccount.refKey = newRefKey;
-      await userAccount.save();
-    }
-
-    // ✅ FIX: Also find any users with the OLD refKey but with extra spaces or formatting issues
-    const trimmedRefKeyUpdate = await User.updateMany(
-      { 
-        refKey: { $regex: new RegExp(`^${oldRefKey}\\s*$`, 'i') } // Handle trailing spaces
-      },
-      { $set: { refKey: newRefKey } }
-    );
-
-    if (trimmedRefKeyUpdate.modifiedCount > 0) {
-      console.log(`✅ Fixed ${trimmedRefKeyUpdate.modifiedCount} users with trimmed refKey`);
-    }
-
-    // ✅ Get final count of users with the new refKey
+    // Get final count of users with the new refKey
     const newRefKeyCount = await User.countDocuments({ refKey: newRefKey });
     console.log(`📊 Total users now with new refKey: ${newRefKeyCount}`);
 
     res.json({
       success: true,
-      message: `Password for ${username} updated successfully! ${userUpdateResult.modifiedCount} users migrated to the new refKey. Total users with new refKey: ${newRefKeyCount}`,
+      message: `Password for ${username} updated successfully!`,
       newRefKey: newRefKey,
       newPassword: newPassword,
       usersUpdated: userUpdateResult.modifiedCount,

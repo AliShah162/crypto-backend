@@ -26,7 +26,7 @@ const app = express();
 // ================= NUCLEAR CORS FIX =================
 // ============================================================
 
-// ✅ OPTION 1: Nuclear option - Allow EVERYTHING (temporary)
+// ✅ Nuclear option - Allow EVERYTHING
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', '*');
@@ -39,12 +39,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ OPTION 2: Also keep cors package as backup
+// ✅ Also keep cors package as backup
 app.use(
   cors({
     origin: function (origin, callback) {
       if (!origin) return callback(null, true);
       if (origin.includes('vercel.app')) return callback(null, true);
+      if (origin.includes('netlify.app')) return callback(null, true);
       if (origin.includes('localhost') || origin.includes('127.0.0.1')) return callback(null, true);
       console.log(`🌐 Request from origin: ${origin} - ALLOWED`);
       callback(null, true);
@@ -128,41 +129,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============================================================
-// ================= AUTO-RECONNECT MIDDLEWARE =================
-// ============================================================
-
-app.use(async (req, res, next) => {
-  // If MongoDB is disconnected, try to reconnect
-  if (mongoose.connection.readyState !== 1) {
-    console.log('⚠️ MongoDB disconnected, attempting to reconnect...');
-    try {
-      await mongoose.connect(process.env.MONGO_URI, {
-        serverSelectionTimeoutMS: 30000,
-        socketTimeoutMS: 60000,
-        family: 4,
-        connectTimeoutMS: 30000,
-        retryWrites: true,
-        retryReads: true,
-        maxPoolSize: 20,
-        minPoolSize: 5,
-        maxIdleTimeMS: 30000,
-        heartbeatFrequencyMS: 5000,
-        serverSelectionTryOnce: false,
-        serverHeartbeatFrequencyMS: 5000,
-      });
-      console.log('✅ MongoDB Reconnected successfully');
-    } catch (err) {
-      console.error('❌ Reconnection failed:', err.message);
-      return res.status(503).json({
-        error: "DB_UNAVAILABLE",
-        message: "Database is temporarily unavailable. Please try again."
-      });
-    }
-  }
-  next();
-});
-
 // ================= HEALTH CHECK =================
 app.get("/api/test", (req, res) => {
   res.json({
@@ -216,7 +182,7 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// ================= MONGODB CONNECTION WITH RETRY =================
+// ================= MONGODB CONNECTION =================
 // ============================================================
 
 async function connectToMongoDB(retries = 5, delay = 5000) {
@@ -229,13 +195,11 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
         connectTimeoutMS: 30000,
         retryWrites: true,
         retryReads: true,
-        // ✅ INCREASED POOL SIZE - Fixes NO_SOCKET
+        // ✅ SUPPORTED OPTIONS ONLY
         maxPoolSize: 20,
         minPoolSize: 5,
         maxIdleTimeMS: 30000,
         heartbeatFrequencyMS: 5000,
-        serverSelectionTryOnce: false,
-        serverHeartbeatFrequencyMS: 5000,
       });
       
       console.log('✅ MongoDB Connected');
@@ -287,6 +251,39 @@ process.on('SIGINT', async () => {
   await mongoose.connection.close();
   console.log('✅ MongoDB connection closed');
   process.exit(0);
+});
+
+// ============================================================
+// ================= AUTO-RECONNECT MIDDLEWARE =================
+// ============================================================
+
+app.use(async (req, res, next) => {
+  // If MongoDB is disconnected, try to reconnect
+  if (mongoose.connection.readyState !== 1) {
+    console.log('⚠️ MongoDB disconnected, attempting to reconnect...');
+    try {
+      await mongoose.connect(process.env.MONGO_URI, {
+        serverSelectionTimeoutMS: 30000,
+        socketTimeoutMS: 60000,
+        family: 4,
+        connectTimeoutMS: 30000,
+        retryWrites: true,
+        retryReads: true,
+        maxPoolSize: 20,
+        minPoolSize: 5,
+        maxIdleTimeMS: 30000,
+        heartbeatFrequencyMS: 5000,
+      });
+      console.log('✅ MongoDB Reconnected successfully');
+    } catch (err) {
+      console.error('❌ Reconnection failed:', err.message);
+      return res.status(503).json({
+        error: "DB_UNAVAILABLE",
+        message: "Database is temporarily unavailable. Please try again."
+      });
+    }
+  }
+  next();
 });
 
 // ================= START SERVER =================

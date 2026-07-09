@@ -1857,78 +1857,98 @@ router.delete("/debug/force-delete-all/:username", async (req, res) => {
 
 // ================= MASTER ADMIN SESSION MANAGEMENT =================
 
-// REGISTER ADMIN SESSION - Called when admin panel loads
+// userRoutes.js - REPLACE the entire /admin/register-session endpoint
+
 router.post("/admin/register-session", async (req, res) => {
   try {
-    const { adminKey, userAgent, adminUsername } = req.body;
+    const { adminKey, userAgent, adminUsername, sessionId } = req.body;
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
+    // ✅ Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
-      return res.status(401).json({ error: "Unauthorized" });
+      console.error("❌ Invalid admin key:", adminKey);
+      return res.status(401).json({ 
+        success: false,
+        error: "Unauthorized", 
+        message: "Invalid admin key" 
+      });
     }
 
-    const sessionId = generateSessionId();
+    // ✅ Use provided sessionId or generate one
+    const newSessionId = sessionId || generateSessionId();
     const ipAddress = getClientIp(req);
     const deviceInfo = getDeviceInfo(userAgent);
     const browser = getBrowserInfo(userAgent);
 
-    // ✅ CHECK IF THIS IS A VIRTUAL ADMIN
     let sessionUser = adminUsername || "master_admin";
     
-    // If the admin username is provided and it's not master_admin, it's a virtual admin
-    // Check if this user exists and has a refKey
+    // Check if this is a virtual admin
     if (adminUsername && adminUsername !== "master_admin") {
       const virtualAdmin = await VirtualAdmin.findOne({ 
         username: adminUsername.toLowerCase().trim() 
       });
       if (virtualAdmin) {
-        sessionUser = adminUsername; // Keep the virtual admin username
+        sessionUser = adminUsername;
       }
     }
 
-    // ✅ Use findOneAndUpdate with $push to avoid version conflicts
-    const masterAdmin = await User.findOneAndUpdate(
-      { username: "master_admin" },
-      {
-        $set: { isMasterAdmin: true },
-        $push: {
-          adminSessions: {
-            sessionId,
-            ipAddress: ipAddress,
-            userAgent: userAgent || "Unknown",
-            deviceInfo: `${browser} - ${deviceInfo}`,
-            loggedInAt: new Date(),
-            lastActiveAt: new Date(),
-            isActive: true,
-            sessionUser: sessionUser, // ✅ Use the correct username
-          }
-        }
-      },
-      { 
-        new: true,
-        upsert: true,
-        setDefaultsOnInsert: true
-      }
-    );
+    // ✅ Find master admin
+    let masterAdmin = await User.findOne({ username: "master_admin" });
 
-    // Keep only last 200 sessions (widened from 50 as a safety margin now
-    // that the frontend no longer force-creates a new session on every mount)
+    if (!masterAdmin) {
+      masterAdmin = await User.create({
+        username: "master_admin",
+        email: "master@admin.com",
+        password: "master_admin",
+        role: "admin",
+        isMasterAdmin: true,
+        adminSessions: [],
+      });
+      console.log("✅ Created master admin");
+    }
+
+    // ✅ ALWAYS create a NEW session - DO NOT check for existing
+    // This ensures each tab gets its own session
+    masterAdmin.adminSessions.push({
+      sessionId: newSessionId,
+      ipAddress: ipAddress,
+      userAgent: userAgent || "Unknown",
+      deviceInfo: `${browser} - ${deviceInfo}`,
+      loggedInAt: new Date(),
+      lastActiveAt: new Date(),
+      isActive: true,
+      sessionUser: sessionUser,
+      customName: null,
+    });
+
+    // Keep only last 200 sessions
     if (masterAdmin.adminSessions.length > 200) {
       masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-200);
-      await User.findOneAndUpdate(
-        { username: "master_admin" },
-        { $set: { adminSessions: masterAdmin.adminSessions } }
-      );
     }
 
+    masterAdmin.markModified("adminSessions");
+    await masterAdmin.save();
+
+    // ✅ Log session count for this user
+    const userSessionCount = masterAdmin.adminSessions.filter(
+      s => s.sessionUser === sessionUser && s.isActive !== false
+    ).length;
+    console.log(`📊 ${sessionUser} now has ${userSessionCount} active sessions`);
+
+    // ✅ Return success
     res.json({
       success: true,
-      sessionId,
+      sessionId: newSessionId,
       message: "Admin session registered",
     });
+
   } catch (err) {
-    console.error("Error registering admin session:", err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error registering admin session:", err);
+    res.status(500).json({ 
+      success: false,
+      error: "INTERNAL_SERVER_ERROR", 
+      message: err.message 
+    });
   }
 });
 
@@ -4323,6 +4343,52 @@ router.post("/debug/vadmin-login-check", async (req, res) => {
         : "❌ No match found"
     });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+
+
+// Add this endpoint if you don't have it
+router.post("/admin/logout", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID required" });
+    }
+
+    // ✅ Mark session as inactive
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+
+    const sessionIndex = masterAdmin.adminSessions.findIndex(
+      (s) => s.sessionId === sessionId
+    );
+
+    if (sessionIndex === -1) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    masterAdmin.adminSessions[sessionIndex].isActive = false;
+    masterAdmin.adminSessions[sessionIndex].loggedOutAt = new Date();
+    masterAdmin.markModified("adminSessions");
+    await masterAdmin.save();
+
+    res.json({ success: true, message: "Logged out successfully" });
+  } catch (err) {
+    console.error("Logout error:", err);
     res.status(500).json({ error: err.message });
   }
 });

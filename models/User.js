@@ -27,6 +27,14 @@ const userSchema = new mongoose.Schema({
   // Financial
   balance: { type: Number, default: 0 },
   creditScore: { type: Number, default: 50 },
+  // ✅ ADD THIS - User Level
+  level: { 
+    type: Number, 
+    default: 1, 
+    enum: [1, 2],  // Only Level 1 or Level 2
+    min: 1,
+    max: 2
+  },
 
   // Frozen amounts
   frozenAmounts: { type: Array, default: [] },

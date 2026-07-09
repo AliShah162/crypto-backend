@@ -177,6 +177,13 @@ mongoose
     serverSelectionTimeoutMS: 30000,
     socketTimeoutMS: 60000,
     family: 4,
+    connectTimeoutMS: 30000,
+    retryWrites: true,
+    retryReads: true,
+    maxPoolSize: 10,
+    minPoolSize: 2,
+    maxIdleTimeMS: 10000,
+    heartbeatFrequencyMS: 10000,
   })
   .then(async () => {
     console.log("✅ MongoDB Connected");

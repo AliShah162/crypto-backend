@@ -104,16 +104,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= ✅ FIX: NO GZIP COMPRESSION =================
+// ================= NO GZIP COMPRESSION (Fixes ERR_CONTENT_DECODING_FAILED) =================
 app.use((req, res, next) => {
-  // Add caching headers to reduce load
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
-  
   // ✅ REMOVED: res.setHeader('Content-Encoding', 'gzip');
-  // This was causing ERR_CONTENT_DECODING_FAILED
-  
   next();
 });
 
@@ -169,42 +165,101 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ============================================================
+// ================= MONGODB CONNECTION WITH RETRY =================
+// ============================================================
+
+async function connectToMongoDB(retries = 5, delay = 5000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await mongoose.connect(process.env.MONGO_URI, {
+        serverSelectionTimeoutMS: 30000,
+        socketTimeoutMS: 60000,
+        family: 4,
+        connectTimeoutMS: 30000,
+        retryWrites: true,
+        retryReads: true,
+        // ✅ CRITICAL - Connection Pool Settings (Fixes NO_SOCKET)
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        maxIdleTimeMS: 10000,
+        heartbeatFrequencyMS: 10000,
+        keepAlive: true,
+        keepAliveInitialDelay: 300000,
+      });
+      
+      console.log('✅ MongoDB Connected');
+      console.log(`   Database: ${mongoose.connection.db.databaseName}`);
+      console.log(`   Host: ${mongoose.connection.host}`);
+      console.log(`   Max Pool Size: 10`);
+      return;
+    } catch (err) {
+      console.error(`❌ MongoDB connection attempt ${i + 1} failed:`, err.message);
+      if (i < retries - 1) {
+        const waitTime = Math.min(delay * Math.pow(1.5, i), 30000);
+        console.log(`🔄 Retrying in ${waitTime/1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else {
+        console.error('❌ All MongoDB connection attempts failed');
+        console.error('   Please check:');
+        console.error('   1. Your MONGO_URI in .env');
+        console.error('   2. MongoDB Atlas IP whitelist (add 0.0.0.0/0)');
+        console.error('   3. Network connectivity');
+        process.exit(1);
+      }
+    }
+  }
+}
+
+// ================= MONGODB EVENT HANDLERS =================
+
+mongoose.connection.on('connected', () => {
+  console.log('✅ MongoDB Connected (event)');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('❌ MongoDB Connection Error:', err.message);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️ MongoDB Disconnected - will auto-reconnect');
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('✅ MongoDB Reconnected');
+});
+
+// ================= GRACEFUL SHUTDOWN =================
+process.on('SIGINT', async () => {
+  console.log('🛑 Shutting down...');
+  await mongoose.connection.close();
+  console.log('✅ MongoDB connection closed');
+  process.exit(0);
+});
+
 // ================= START SERVER =================
+
 const PORT = process.env.PORT || 5000;
 
-mongoose
-  .connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 30000,
-    socketTimeoutMS: 60000,
-    family: 4,
-    connectTimeoutMS: 30000,
-    retryWrites: true,
-    retryReads: true,
-    maxPoolSize: 10,
-    minPoolSize: 2,
-    maxIdleTimeMS: 10000,
-    heartbeatFrequencyMS: 10000,
-  })
-  .then(async () => {
-    console.log("✅ MongoDB Connected");
-    console.log("   Database:", mongoose.connection.db.databaseName);
-    console.log("   Host:", mongoose.connection.host);
-
-    // Add refKey field to existing users
-    try {
-      const result = await User.updateMany(
-        { refKey: { $exists: false } },
-        { $set: { refKey: null } }
-      );
+connectToMongoDB().then(() => {
+  // ================= ADD refKey FIELD TO EXISTING USERS =================
+  try {
+    User.updateMany(
+      { refKey: { $exists: false } },
+      { $set: { refKey: null } }
+    ).then((result) => {
       console.log(`✅ refKey field added to ${result.modifiedCount} users`);
-    } catch (err) {
+    }).catch((err) => {
       console.log("⚠️ refKey migration note:", err.message);
-    }
+    });
+  } catch (err) {
+    console.log("⚠️ refKey migration note:", err.message);
+  }
 
-    // Create virtual admins if they don't exist
-    try {
-      const VirtualAdmin = mongoose.model("VirtualAdmin");
-      const count = await VirtualAdmin.countDocuments();
+  // ================= CREATE VIRTUAL ADMINS IF NOT EXIST =================
+  try {
+    const VirtualAdmin = mongoose.model("VirtualAdmin");
+    VirtualAdmin.countDocuments().then((count) => {
       if (count === 0) {
         console.log("📝 Creating default virtual admins...");
         const defaultAdmins = [
@@ -215,30 +270,30 @@ mongoose
           { adminName: "Admin 5", username: "vadmin5", refKey: "iJ6rT8yUc3", email: "vadmin5@example.com" },
         ];
         
-        for (const admin of defaultAdmins) {
-          await VirtualAdmin.create(admin);
-        }
-        console.log(`✅ Created ${defaultAdmins.length} virtual admins`);
+        VirtualAdmin.insertMany(defaultAdmins).then(() => {
+          console.log(`✅ Created ${defaultAdmins.length} virtual admins`);
+        }).catch((err) => {
+          console.log("⚠️ Virtual admin creation note:", err.message);
+        });
       }
-    } catch (err) {
+    }).catch((err) => {
       console.log("⚠️ Virtual admin creation note:", err.message);
-    }
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`📍 MongoDB: ${mongoose.connection.host}`);
-      console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "CONFIGURED ✅" : "MISSING ❌"}`);
-      console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
-      console.log(`\n🔥 Ready for Indian users! CORS is configured to allow all origins.`);
-      console.log(`⚠️ Note: Gzip compression is DISABLED to prevent ERR_CONTENT_DECODING_FAILED`);
     });
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    console.error("   Please check:");
-    console.error("   1. Your MONGO_URI in .env");
-    console.error("   2. Network connectivity");
-    console.error("   3. MongoDB Atlas IP whitelist");
-    process.exit(1);
+  } catch (err) {
+    console.log("⚠️ Virtual admin creation note:", err.message);
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`📍 MongoDB: ${mongoose.connection.host}`);
+    console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "CONFIGURED ✅" : "MISSING ❌"}`);
+    console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
+    console.log(`\n🔥 Ready for Indian users! CORS is configured to allow all origins.`);
+    console.log(`⚠️ Note: Gzip compression is DISABLED to prevent ERR_CONTENT_DECODING_FAILED`);
+    console.log(`⚠️ Note: MongoDB connection pool size: 10 (prevents NO_SOCKET errors)`);
   });
+}).catch((err) => {
+  console.error("❌ Failed to start server:", err);
+  process.exit(1);
+});

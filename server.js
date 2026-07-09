@@ -30,15 +30,25 @@ app.use(express.json({ limit: '10mb' }));
 // 2. URL Encoded with increased limit
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ================= CORS - ALLOW ALL ORIGINS =================
+// ================= CORS - FIXED =================
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
-      if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+      
+      // Allow all Vercel URLs (including preview deployments)
+      if (origin.includes('vercel.app')) {
         return callback(null, true);
       }
-      console.log(`🌐 Request from origin: ${origin}`);
+      
+      // Allow all localhost
+      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        return callback(null, true);
+      }
+      
+      // Allow any other origin (temporary for debugging)
+      console.log(`🌐 Request from origin: ${origin} - ALLOWED`);
       callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -184,8 +194,6 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
         minPoolSize: 2,
         maxIdleTimeMS: 10000,
         heartbeatFrequencyMS: 10000,
-        keepAlive: true,
-        keepAliveInitialDelay: 300000,
       });
       
       console.log('✅ MongoDB Connected');

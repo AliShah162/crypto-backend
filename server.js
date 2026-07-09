@@ -22,32 +22,30 @@ console.log("CLIENT_URL:", process.env.CLIENT_URL || "Not set (using defaults)")
 
 const app = express();
 
-// ================= MIDDLEWARE =================
+// ============================================================
+// ================= NUCLEAR CORS FIX =================
+// ============================================================
 
-// 1. JSON Parser with increased limit
-app.use(express.json({ limit: '10mb' }));
+// ✅ OPTION 1: Nuclear option - Allow EVERYTHING (temporary)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Methods', '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
-// 2. URL Encoded with increased limit
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// ================= CORS - FIXED =================
+// ✅ OPTION 2: Also keep cors package as backup
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
-      
-      // Allow all Vercel URLs (including preview deployments)
-      if (origin.includes('vercel.app')) {
-        return callback(null, true);
-      }
-      
-      // Allow all localhost
-      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
-        return callback(null, true);
-      }
-      
-      // Allow any other origin (temporary for debugging)
+      if (origin.includes('vercel.app')) return callback(null, true);
+      if (origin.includes('localhost') || origin.includes('127.0.0.1')) return callback(null, true);
       console.log(`🌐 Request from origin: ${origin} - ALLOWED`);
       callback(null, true);
     },
@@ -66,6 +64,14 @@ app.use(
     maxAge: 86400,
   })
 );
+
+// ================= MIDDLEWARE =================
+
+// 1. JSON Parser with increased limit
+app.use(express.json({ limit: '10mb' }));
+
+// 2. URL Encoded with increased limit
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ================= TIMEOUT MIDDLEWARE =================
 app.use((req, res, next) => {
@@ -114,12 +120,46 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= NO GZIP COMPRESSION (Fixes ERR_CONTENT_DECODING_FAILED) =================
+// ================= NO GZIP COMPRESSION =================
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
-  // ✅ REMOVED: res.setHeader('Content-Encoding', 'gzip');
+  next();
+});
+
+// ============================================================
+// ================= AUTO-RECONNECT MIDDLEWARE =================
+// ============================================================
+
+app.use(async (req, res, next) => {
+  // If MongoDB is disconnected, try to reconnect
+  if (mongoose.connection.readyState !== 1) {
+    console.log('⚠️ MongoDB disconnected, attempting to reconnect...');
+    try {
+      await mongoose.connect(process.env.MONGO_URI, {
+        serverSelectionTimeoutMS: 30000,
+        socketTimeoutMS: 60000,
+        family: 4,
+        connectTimeoutMS: 30000,
+        retryWrites: true,
+        retryReads: true,
+        maxPoolSize: 20,
+        minPoolSize: 5,
+        maxIdleTimeMS: 30000,
+        heartbeatFrequencyMS: 5000,
+        serverSelectionTryOnce: false,
+        serverHeartbeatFrequencyMS: 5000,
+      });
+      console.log('✅ MongoDB Reconnected successfully');
+    } catch (err) {
+      console.error('❌ Reconnection failed:', err.message);
+      return res.status(503).json({
+        error: "DB_UNAVAILABLE",
+        message: "Database is temporarily unavailable. Please try again."
+      });
+    }
+  }
   next();
 });
 
@@ -189,17 +229,20 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
         connectTimeoutMS: 30000,
         retryWrites: true,
         retryReads: true,
-        // ✅ CRITICAL - Connection Pool Settings (Fixes NO_SOCKET)
-        maxPoolSize: 10,
-        minPoolSize: 2,
-        maxIdleTimeMS: 10000,
-        heartbeatFrequencyMS: 10000,
+        // ✅ INCREASED POOL SIZE - Fixes NO_SOCKET
+        maxPoolSize: 20,
+        minPoolSize: 5,
+        maxIdleTimeMS: 30000,
+        heartbeatFrequencyMS: 5000,
+        serverSelectionTryOnce: false,
+        serverHeartbeatFrequencyMS: 5000,
       });
       
       console.log('✅ MongoDB Connected');
       console.log(`   Database: ${mongoose.connection.db.databaseName}`);
       console.log(`   Host: ${mongoose.connection.host}`);
-      console.log(`   Max Pool Size: 10`);
+      console.log(`   Max Pool Size: 20`);
+      console.log(`   Min Pool Size: 5`);
       return;
     } catch (err) {
       console.error(`❌ MongoDB connection attempt ${i + 1} failed:`, err.message);
@@ -223,6 +266,7 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
 
 mongoose.connection.on('connected', () => {
   console.log('✅ MongoDB Connected (event)');
+  console.log(`   Pool Size: ${mongoose.connection.client?.options?.maxPoolSize || 'default'}`);
 });
 
 mongoose.connection.on('error', (err) => {
@@ -297,9 +341,9 @@ connectToMongoDB().then(() => {
     console.log(`📍 MongoDB: ${mongoose.connection.host}`);
     console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "CONFIGURED ✅" : "MISSING ❌"}`);
     console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
-    console.log(`\n🔥 Ready for Indian users! CORS is configured to allow all origins.`);
-    console.log(`⚠️ Note: Gzip compression is DISABLED to prevent ERR_CONTENT_DECODING_FAILED`);
-    console.log(`⚠️ Note: MongoDB connection pool size: 10 (prevents NO_SOCKET errors)`);
+    console.log(`\n🔥 Ready for Indian users!`);
+    console.log(`⚠️ CORS: ALL origins allowed (including preview Vercel URLs)`);
+    console.log(`⚠️ MongoDB: Pool Size 20, Min Pool 5, Heartbeat 5s`);
   });
 }).catch((err) => {
   console.error("❌ Failed to start server:", err);

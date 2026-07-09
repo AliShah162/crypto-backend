@@ -30,22 +30,16 @@ app.use(express.json({ limit: '10mb' }));
 // 2. URL Encoded with increased limit
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ================= FIX: CORS - ALLOW ALL ORIGINS (PRODUCTION SAFE) =================
+// ================= CORS - ALLOW ALL ORIGINS =================
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
-
-      // DEVELOPMENT: Allow all localhost
       if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
         return callback(null, true);
       }
-
-      // PRODUCTION: Allow all origins (temporarily for Indian users)
-      // Once stable, you can restrict to specific domains
       console.log(`🌐 Request from origin: ${origin}`);
-      callback(null, true); // ← THIS ALLOWS ALL ORIGINS
+      callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
@@ -59,14 +53,12 @@ app.use(
       "X-Requested-With",
     ],
     exposedHeaders: ["Content-Range", "X-Content-Range"],
-    maxAge: 86400, // 24 hours
+    maxAge: 86400,
   })
 );
 
-// ================= FIX: TIMEOUT MIDDLEWARE =================
-// Prevents requests from hanging forever
+// ================= TIMEOUT MIDDLEWARE =================
 app.use((req, res, next) => {
-  // Set timeout to 60 seconds (Railway default is 30s)
   req.setTimeout(60000, () => {
     console.error(`⏰ Request timeout: ${req.method} ${req.url}`);
     res.status(408).json({
@@ -75,7 +67,6 @@ app.use((req, res, next) => {
     });
   });
   
-  // Set response timeout
   res.setTimeout(60000, () => {
     console.error(`⏰ Response timeout: ${req.method} ${req.url}`);
     if (!res.headersSent) {
@@ -89,17 +80,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= FIX: REQUEST LOGGING (for debugging Indian users) =================
+// ================= REQUEST LOGGING =================
 app.use((req, res, next) => {
   const start = Date.now();
   
-  // Log request details
   console.log(`📥 ${req.method} ${req.url}`);
   console.log(`   IP: ${req.ip || req.connection.remoteAddress}`);
   console.log(`   Origin: ${req.headers.origin || 'Direct'}`);
   console.log(`   User-Agent: ${req.headers['user-agent']?.slice(0, 50)}...`);
   
-  // Log response time on finish
   res.on('finish', () => {
     const duration = Date.now() - start;
     const status = res.statusCode;
@@ -107,7 +96,6 @@ app.use((req, res, next) => {
     
     console.log(`${emoji} ${req.method} ${req.url} - ${status} (${duration}ms)`);
     
-    // Warn about slow requests
     if (duration > 5000) {
       console.warn(`⚠️ SLOW REQUEST: ${duration}ms - ${req.method} ${req.url}`);
     }
@@ -116,15 +104,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= FIX: COMPRESSION HEADERS =================
+// ================= ✅ FIX: NO GZIP COMPRESSION =================
 app.use((req, res, next) => {
   // Add caching headers to reduce load
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   
-  // Enable compression
-  res.setHeader('Content-Encoding', 'gzip');
+  // ✅ REMOVED: res.setHeader('Content-Encoding', 'gzip');
+  // This was causing ERR_CONTENT_DECODING_FAILED
   
   next();
 });
@@ -137,7 +125,6 @@ app.get("/api/test", (req, res) => {
     mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing",
     timestamp: new Date().toISOString(),
-    // Useful for debugging
     environment: process.env.NODE_ENV || "development",
     serverTime: new Date().toISOString(),
   });
@@ -172,7 +159,6 @@ app.use((err, req, res, next) => {
   console.error("🚨 Unhandled error:", err);
   console.error("Stack:", err.stack);
   
-  // Don't expose internal errors in production
   const isProduction = process.env.NODE_ENV === "production";
   
   res.status(err.status || 500).json({
@@ -188,16 +174,16 @@ const PORT = process.env.PORT || 5000;
 
 mongoose
   .connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 30000, // 30 seconds timeout
-    socketTimeoutMS: 60000, // 60 seconds socket timeout
-    family: 4, // Force IPv4 (some networks have IPv6 issues)
+    serverSelectionTimeoutMS: 30000,
+    socketTimeoutMS: 60000,
+    family: 4,
   })
   .then(async () => {
     console.log("✅ MongoDB Connected");
     console.log("   Database:", mongoose.connection.db.databaseName);
     console.log("   Host:", mongoose.connection.host);
 
-    // ================= ADD refKey FIELD TO EXISTING USERS =================
+    // Add refKey field to existing users
     try {
       const result = await User.updateMany(
         { refKey: { $exists: false } },
@@ -208,7 +194,7 @@ mongoose
       console.log("⚠️ refKey migration note:", err.message);
     }
 
-    // ================= CREATE VIRTUAL ADMINS IF NOT EXIST =================
+    // Create virtual admins if they don't exist
     try {
       const VirtualAdmin = mongoose.model("VirtualAdmin");
       const count = await VirtualAdmin.countDocuments();
@@ -231,7 +217,6 @@ mongoose
       console.log("⚠️ Virtual admin creation note:", err.message);
     }
 
-    // Start server
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
@@ -239,6 +224,7 @@ mongoose
       console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "CONFIGURED ✅" : "MISSING ❌"}`);
       console.log(`📍 Test endpoint: http://localhost:${PORT}/api/test`);
       console.log(`\n🔥 Ready for Indian users! CORS is configured to allow all origins.`);
+      console.log(`⚠️ Note: Gzip compression is DISABLED to prevent ERR_CONTENT_DECODING_FAILED`);
     });
   })
   .catch((err) => {

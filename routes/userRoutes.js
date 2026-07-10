@@ -257,12 +257,9 @@ function getBrowserInfo(userAgent) {
 // ... rest of your routes (register, login, etc.)
 
 // ================= REGISTER =================
-// userRoutes.js - Update the registration endpoint
-
 router.post("/register", async (req, res) => {
   try {
-    const { username, email, password, fullName, phone, country, refKey } =
-      req.body;
+    const { username, email, password, fullName, phone, country, refKey } = req.body;
 
     if (!username || !email || !password) {
       return res
@@ -270,8 +267,17 @@ router.post("/register", async (req, res) => {
         .json({ error: "Username, email and password are required" });
     }
 
+    // ✅ REFKEY IS NOW REQUIRED
+    if (!refKey || refKey.trim() === "") {
+      return res.status(400).json({
+        error: "REFKEY_REQUIRED",
+        message: "A reference key from your admin is required to register. Please contact your admin."
+      });
+    }
+
     const cleanUser = username.toLowerCase().trim();
     const cleanEmail = email.toLowerCase().trim();
+    const cleanRefKey = refKey.trim();
 
     const existingUser = await User.findOne({
       $or: [{ username: cleanUser }, { email: cleanEmail }],
@@ -283,30 +289,24 @@ router.post("/register", async (req, res) => {
         .json({ error: "Username or email already exists" });
     }
 
-    // ✅ VALIDATE REFKEY IF PROVIDED
-    let validatedRefKey = null;
-    if (refKey && refKey.trim() !== "") {
-      const cleanRefKey = refKey.trim();
-      
-      // Check if this refKey exists in VirtualAdmin
-      const virtualAdmin = await VirtualAdmin.findOne({ refKey: cleanRefKey });
-      
-      if (!virtualAdmin) {
-        return res.status(400).json({ 
-          error: "Invalid reference key. Please check with your admin.",
-          code: "INVALID_REFKEY"
-        });
-      }
-      
-      // Check if virtual admin is active and not banned
-      if (!virtualAdmin.isActive || virtualAdmin.isBanned) {
-        return res.status(400).json({ 
-          error: "This reference key is currently inactive or banned. Please contact support.",
-          code: "INACTIVE_REFKEY"
-        });
-      }
-      
-      validatedRefKey = cleanRefKey;
+    // ✅ VALIDATE REFKEY
+    const virtualAdmin = await VirtualAdmin.findOne({ refKey: cleanRefKey });
+    
+    if (!virtualAdmin) {
+      return res.status(400).json({ 
+        error: "INVALID_REFKEY",
+        message: "Invalid reference key. Please check with your admin.",
+        code: "INVALID_REFKEY"
+      });
+    }
+    
+    // Check if virtual admin is active and not banned
+    if (!virtualAdmin.isActive || virtualAdmin.isBanned) {
+      return res.status(400).json({ 
+        error: "INACTIVE_REFKEY",
+        message: "This reference key is currently inactive or banned. Please contact support.",
+        code: "INACTIVE_REFKEY"
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -319,7 +319,7 @@ router.post("/register", async (req, res) => {
       fullName: fullName || "",
       phone: phone || "",
       country: country || "",
-      refKey: validatedRefKey, // ✅ Use validated refKey or null
+      refKey: cleanRefKey, // ✅ ALWAYS set the refKey
       withdrawalRequests: [],
       pendingTrades: [],
       notifications: [],
@@ -330,6 +330,7 @@ router.post("/register", async (req, res) => {
 
     res.status(201).json(safeUser);
   } catch (err) {
+    console.error("Registration error:", err);
     res.status(500).json({ error: err.message });
   }
 });

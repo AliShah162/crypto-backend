@@ -245,4 +245,5 @@ connectToMongoDB().then(async () => {
 }).catch((err) => {
   console.error("❌ Failed to start server:", err);
   process.exit(1);
-});
+});/ /   f o r c e   r e d e p l o y  
+ 

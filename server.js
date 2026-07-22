@@ -20,42 +20,26 @@ console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME
 const app = express();
 
 // ============================================================
-// ================= CORS - FIXED VERSION =================
+// ================= CORS - FIXED =================
 // ============================================================
-
-// First, set CORS headers for all responses
 app.use((req, res, next) => {
-  // Allow all origins (you can restrict this later)
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Methods', '*');
   res.header('Access-Control-Allow-Credentials', 'true');
-  
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
 
-// Then use cors middleware with proper configuration
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
-      
-      // Log the origin for debugging
-      console.log(`🌐 Request from origin: ${origin}`);
-      
-      // Allow all origins for now (you can restrict to specific domains later)
-      // For production, you can use:
-      // const allowedOrigins = ['vercel.app', 'netlify.app', 'localhost'];
-      // const isAllowed = allowedOrigins.some(allowed => origin.includes(allowed));
-      // if (isAllowed) return callback(null, true);
-      
-      // Allow all origins (temporary fix)
-      return callback(null, true);
+      // Allow ALL origins for now
+      console.log(`🌐 Request from origin: ${origin} - ALLOWED`);
+      callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
@@ -139,7 +123,7 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// ================= MONGODB CONNECTION - CLEAN VERSION =================
+// ================= MONGODB CONNECTION =================
 // ============================================================
 
 async function connectToMongoDB(retries = 5, delay = 5000) {
@@ -245,5 +229,4 @@ connectToMongoDB().then(async () => {
 }).catch((err) => {
   console.error("❌ Failed to start server:", err);
   process.exit(1);
-});/ /   f o r c e   r e d e p l o y  
- 
+});

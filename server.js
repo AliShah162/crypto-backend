@@ -20,26 +20,38 @@ console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME
 const app = express();
 
 // ============================================================
-// ================= CORS - FIXED =================
+// ================= CORS - FULLY FIXED =================
 // ============================================================
+
+// CRITICAL: These headers MUST be set before any routes
 app.use((req, res, next) => {
+  // Allow ALL origins (temporary for testing)
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', '*');
-  res.header('Access-Control-Allow-Methods', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests immediately
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
 
+// CORS middleware - ALLOW ALL
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      // Allow ALL origins for now
-      console.log(`🌐 Request from origin: ${origin} - ALLOWED`);
-      callback(null, true);
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) {
+        console.log("🌐 Request from unknown origin (no origin header)");
+        return callback(null, true);
+      }
+      
+      console.log(`🌐 Request from origin: ${origin}`);
+      
+      // ✅ ALLOW ALL ORIGINS - This is the fix!
+      return callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
@@ -85,7 +97,24 @@ app.use((req, res, next) => {
 });
 
 // ================= HEALTH CHECKS =================
+app.get("/ping", (req, res) => {
+  // Explicitly set CORS headers for this endpoint
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({
+    status: "ok",
+    message: "Ping successful!",
+    env: {
+      mongoUri: !!process.env.MONGO_URI,
+      adminKey: !!process.env.ADMIN_API_KEY,
+      cloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get("/api/test", (req, res) => {
+  // Explicitly set CORS headers for this endpoint
+  res.header('Access-Control-Allow-Origin', '*');
   res.json({
     status: "ok",
     message: "Backend is running!",

@@ -4358,7 +4358,7 @@ router.post("/admin/logout", async (req, res) => {
 // ================= DEPOSIT REQUEST WITH SCREENSHOT =================
 router.post(
   "/deposit-request",
-  upload.single("screenshot"),
+  // upload.single("screenshot"),
   async (req, res) => {
     try {
       console.log("🔵 ===== DEPOSIT REQUEST START =====");

@@ -4361,27 +4361,60 @@ router.post(
   upload.single("screenshot"),
   async (req, res) => {
     try {
-      // ✅ Get data from FormData
+      console.log("🔵 ===== DEPOSIT REQUEST START =====");
+      console.log("🔵 Request body:", req.body);
+      console.log("🔵 Request file:", req.file ? req.file.path : "No file");
+      console.log("🔵 Request headers:", req.headers);
+
       const { username, amount, currency, paymentMethod } = req.body;
       const screenshot = req.file;
 
-      console.log("📝 Deposit request received:", { username, amount, currency, paymentMethod });
-      console.log("📎 Screenshot file:", screenshot ? screenshot.path : "No file");
-
-      if (!username || !amount) {
-        return res.status(400).json({ error: "Username and amount required" });
+      // Validate required fields
+      if (!username) {
+        console.log("❌ Username missing");
+        return res.status(400).json({ 
+          success: false,
+          error: "Username is required" 
+        });
       }
 
+      if (!amount) {
+        console.log("❌ Amount missing");
+        return res.status(400).json({ 
+          success: false,
+          error: "Amount is required" 
+        });
+      }
+
+      const parsedAmount = parseFloat(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        console.log("❌ Invalid amount:", amount);
+        return res.status(400).json({ 
+          success: false,
+          error: "Invalid amount" 
+        });
+      }
+
+      console.log(`🔵 Looking for user: ${username.toLowerCase().trim()}`);
+      
       const user = await User.findOne({
         username: username.toLowerCase().trim(),
       });
+      
       if (!user) {
-        return res.status(404).json({ error: "User not found" });
+        console.log("❌ User not found:", username);
+        return res.status(404).json({ 
+          success: false,
+          error: "User not found" 
+        });
       }
 
+      console.log(`🔵 User found: ${user.username}, Balance: ${user.balance}`);
+
+      // Create deposit request
       const depositRequest = {
         id: Date.now(),
-        amount: parseFloat(amount),
+        amount: parsedAmount,
         currency: currency || "USD",
         paymentMethod: paymentMethod || "bank",
         date: new Date().toISOString(),
@@ -4404,9 +4437,9 @@ router.post(
       // Add to transactions
       user.transactions.unshift({
         type: "Deposit",
-        amount: parseFloat(amount),
+        amount: parsedAmount,
         currency: currency || "USD",
-        usd: parseFloat(amount),
+        usd: parsedAmount,
         date: new Date().toISOString(),
         status: "pending",
         paymentMethod: paymentMethod || "bank",
@@ -4414,24 +4447,31 @@ router.post(
       });
 
       await user.save();
+      console.log(`✅ Deposit request saved for ${user.username}`);
 
       // Notify admin
-      const masterAdmin = await User.findOne({ isMasterAdmin: true });
-      if (masterAdmin) {
-        if (!masterAdmin.notifications) {
-          masterAdmin.notifications = [];
+      try {
+        const masterAdmin = await User.findOne({ isMasterAdmin: true });
+        if (masterAdmin) {
+          if (!masterAdmin.notifications) {
+            masterAdmin.notifications = [];
+          }
+          masterAdmin.notifications.unshift({
+            id: Date.now() + Math.random(),
+            title: "💰 New Deposit Request",
+            body: `${user.username} requested deposit of ${parsedAmount} ${currency || "USD"}`,
+            time: new Date().toISOString(),
+            date: new Date().toISOString(),
+            read: false,
+            userId: user.username,
+            depositId: depositRequest.id,
+          });
+          await masterAdmin.save();
+          console.log("✅ Admin notification sent");
         }
-        masterAdmin.notifications.unshift({
-          id: Date.now() + Math.random(),
-          title: "💰 New Deposit Request",
-          body: `${user.username} requested deposit of ${amount} ${currency || "USD"}`,
-          time: new Date().toISOString(),
-          date: new Date().toISOString(),
-          read: false,
-          userId: user.username,
-          depositId: depositRequest.id,
-        });
-        await masterAdmin.save();
+      } catch (notifErr) {
+        console.error("⚠️ Failed to send admin notification:", notifErr);
+        // Don't fail the request if notification fails
       }
 
       res.json({
@@ -4441,7 +4481,12 @@ router.post(
       });
     } catch (err) {
       console.error("❌ Deposit request error:", err);
-      res.status(500).json({ error: err.message });
+      console.error("❌ Error stack:", err.stack);
+      res.status(500).json({ 
+        success: false,
+        error: err.message || "Internal server error",
+        details: process.env.NODE_ENV === "development" ? err.stack : undefined
+      });
     }
   }
 );

@@ -710,7 +710,7 @@ router.post("/admin/approve-withdrawal", validateAdminSession, async (req, res) 
         id: Date.now() + Math.random(),
         title: "✅ Withdrawal Approved",
         body: `Your withdrawal of $${request.amount} has been approved and processed.`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });
@@ -725,7 +725,7 @@ router.post("/admin/approve-withdrawal", validateAdminSession, async (req, res) 
         id: Date.now() + Math.random(),
         title: "❌ Withdrawal Rejected",
         body: `Your withdrawal of $${request.amount} has been rejected. Please contact support.`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });
@@ -1011,7 +1011,7 @@ router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
               : 0,
         result: trade.result,
         profit: action === "win" ? profitAmount : -trade.amount,
-        formattedDate: new Date().toLocaleString(),
+        formattedDate: new Date().toISOString(),
       };
     } else {
       // Fallback: add new if not found (for old trades)
@@ -1032,7 +1032,7 @@ router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
               : 0,
         result: trade.result,
         date: new Date().toISOString(),
-        formattedDate: new Date().toLocaleString(),
+        formattedDate: new Date().toISOString(),
       };
       user.transactions = [transaction, ...(user.transactions || [])];
     }
@@ -1053,7 +1053,7 @@ router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
         ...user.notifications[existingNotifIndex],
         title: `Trade ${action.toUpperCase()}`,
         body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
         fromAdmin: true,
@@ -1065,7 +1065,7 @@ router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
         id: Date.now() + Math.random(),
         title: `Trade ${action.toUpperCase()}`,
         body: `Your $${trade.amount} ${trade.coin} trade (${trade.orderType}) - ${resultMessage}`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
         fromAdmin: true,
@@ -1123,7 +1123,7 @@ router.post("/admin/send-notification", validateAdminSession, async (req, res) =
       id: Date.now() + Math.random(),
       title,
       body: body || "",
-      time: new Date().toLocaleTimeString(),
+      time: new Date().toISOString(),
       date: new Date().toISOString(),
       read: false,
       fromAdmin: true,
@@ -1166,7 +1166,7 @@ router.post("/:username/notifications", async (req, res) => {
       id: Date.now() + Math.random(),
       title: title || "Notification",
       body: body || "",
-      time: new Date().toLocaleTimeString(),
+      time: new Date().toISOString(),
       date: new Date().toISOString(),
       read: false,
       type: type || "general",
@@ -1737,7 +1737,7 @@ router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => 
         id: Date.now() + Math.random(),
         title: "✅ Deposit Approved",
         body: `Your deposit of $${request.amount} has been approved and added to your balance.`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });
@@ -1750,7 +1750,7 @@ router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => 
         id: Date.now() + Math.random(),
         title: "❌ Deposit Rejected",
         body: `Your deposit of $${request.amount} has been rejected. Please contact support.`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });
@@ -3147,7 +3147,7 @@ router.post(
           id: Date.now() + Math.random(),
           title: "📄 New KYC Submission",
           body: `${user.username} has submitted KYC documents for verification.`,
-          time: new Date().toLocaleTimeString(),
+          time: new Date().toISOString(),
           date: new Date().toISOString(),
           read: false,
           userId: user.username,
@@ -3299,7 +3299,7 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
         id: Date.now() + Math.random(),
         title: "✅ KYC Approved",
         body: "Your KYC documents have been verified. You can now withdraw funds.",
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });
@@ -3316,7 +3316,7 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
         id: Date.now() + Math.random(),
         title: "❌ KYC Rejected",
         body: `Your KYC documents were rejected. Reason: ${kycRecord.rejectionReason}. Please resubmit.`,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
         date: new Date().toISOString(),
         read: false,
       });

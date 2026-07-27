@@ -4393,4 +4393,273 @@ router.post("/admin/logout", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+// ================= DEPOSIT REQUEST WITH SCREENSHOT =================
+router.post(
+  "/deposit-request",
+  upload.single("screenshot"),
+  async (req, res) => {
+    try {
+      const { username, amount, currency, paymentMethod } = req.body;
+      const screenshot = req.file;
+
+      if (!username || !amount) {
+        return res.status(400).json({ error: "Username and amount required" });
+      }
+
+      const user = await User.findOne({
+        username: username.toLowerCase().trim(),
+      });
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const depositRequest = {
+        id: Date.now(),
+        amount: parseFloat(amount),
+        currency: currency || "USD",
+        paymentMethod: paymentMethod || "bank",
+        date: new Date().toISOString(),
+        status: "pending",
+        screenshot: screenshot ? screenshot.path : null, // Cloudinary URL
+        screenshotFilename: screenshot ? screenshot.filename : null,
+        userNote: req.body.note || "",
+      };
+
+      user.depositRequests = user.depositRequests || [];
+      user.depositRequests.unshift(depositRequest);
+
+      // Add to transactions
+      user.transactions = [
+        {
+          type: "Deposit",
+          amount: parseFloat(amount),
+          currency: currency || "USD",
+          usd: parseFloat(amount),
+          date: new Date().toISOString(),
+          status: "pending",
+          note: `Deposit request via ${paymentMethod} - ${currency}`,
+        },
+        ...(user.transactions || []),
+      ];
+
+      await user.save();
+
+      // Notify admin
+      const masterAdmin = await User.findOne({ isMasterAdmin: true });
+      if (masterAdmin) {
+        masterAdmin.notifications = masterAdmin.notifications || [];
+        masterAdmin.notifications.unshift({
+          id: Date.now() + Math.random(),
+          title: "💰 New Deposit Request",
+          body: `${user.username} requested deposit of ${amount} ${currency || "USD"}`,
+          time: new Date().toISOString(),
+          date: new Date().toISOString(),
+          read: false,
+          userId: user.username,
+          depositId: depositRequest.id,
+        });
+        await masterAdmin.save();
+      }
+
+      res.json({
+        success: true,
+        message: "Deposit request submitted",
+        requestId: depositRequest.id,
+      });
+    } catch (err) {
+      console.error("Deposit request error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// ================= ADMIN APPROVE/REJECT DEPOSIT =================
+router.post("/admin/approve-deposit", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
+    }
+
+    const { username, requestId, action } = req.body;
+
+    if (!username || !requestId || !action) {
+      return res.status(400).json({ error: "Username, requestId, and action required" });
+    }
+
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const requestIndex = (user.depositRequests || []).findIndex(
+      (r) => String(r.id) === String(requestId)
+    );
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Deposit request not found" });
+    }
+
+    const request = user.depositRequests[requestIndex];
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ error: `Request already ${request.status}` });
+    }
+
+    if (action === "approve") {
+      request.status = "approved";
+      request.approvedAt = new Date().toISOString();
+
+      // Add amount to balance
+      const amountToAdd = parseFloat(request.amount);
+      user.balance = parseFloat((user.balance + amountToAdd).toFixed(2));
+
+      // Update transaction
+      const txIndex = (user.transactions || []).findIndex(
+        (tx) => tx.status === "pending" && tx.type === "Deposit" && 
+        Math.abs(tx.amount - request.amount) < 0.001
+      );
+      if (txIndex !== -1) {
+        user.transactions[txIndex].status = "approved";
+        user.transactions[txIndex].approvedAt = new Date().toISOString();
+      }
+
+      // Notification
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "✅ Deposit Approved",
+        body: `Your deposit of ${request.amount} ${request.currency || "USD"} has been approved and added to your balance.`,
+        time: new Date().toISOString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else if (action === "reject") {
+      request.status = "rejected";
+      request.rejectedAt = new Date().toISOString();
+
+      // Update transaction
+      const txIndex = (user.transactions || []).findIndex(
+        (tx) => tx.status === "pending" && tx.type === "Deposit" && 
+        Math.abs(tx.amount - request.amount) < 0.001
+      );
+      if (txIndex !== -1) {
+        user.transactions[txIndex].status = "rejected";
+        user.transactions[txIndex].rejectedAt = new Date().toISOString();
+      }
+
+      // Notification
+      user.notifications = user.notifications || [];
+      user.notifications.unshift({
+        id: Date.now() + Math.random(),
+        title: "❌ Deposit Rejected",
+        body: `Your deposit of ${request.amount} ${request.currency || "USD"} has been rejected. Please contact support.`,
+        time: new Date().toISOString(),
+        date: new Date().toISOString(),
+        read: false,
+      });
+    } else {
+      return res.status(400).json({ error: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    user.markModified("depositRequests");
+    user.markModified("transactions");
+    user.markModified("notifications");
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Deposit ${action}d successfully`,
+      newBalance: user.balance,
+      requestStatus: request.status,
+    });
+  } catch (err) {
+    console.error("Error in approve-deposit:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET PAYMENT DETAILS (PUBLIC) =================
+router.get("/admin/payment-details", async (req, res) => {
+  try {
+    // Get payment details from environment variables or database
+    const paymentDetails = {
+      bank: {
+        address: process.env.BANK_ACCOUNT_NUMBER || "Not configured",
+        additionalInfo: process.env.BANK_ADDITIONAL_INFO || "",
+        bankName: process.env.BANK_NAME || "Bank Name",
+        accountHolder: process.env.BANK_ACCOUNT_HOLDER || "Account Holder",
+        ifsc: process.env.BANK_IFSC || "IFSC Code",
+      },
+      crypto: {
+        address: process.env.CRYPTO_ADDRESS || "Not configured",
+        additionalInfo: process.env.CRYPTO_ADDITIONAL_INFO || "Send USDT on BEP20 network",
+      },
+      upi: {
+        address: process.env.UPI_ADDRESS || "Not configured",
+        additionalInfo: process.env.UPI_ADDITIONAL_INFO || "",
+      },
+    };
+
+    res.json({ 
+      success: true, 
+      details: paymentDetails 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN UPDATE PAYMENT DETAILS =================
+router.post("/admin/update-payment-details", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const { method, address, additionalInfo } = req.body;
+
+    if (!method || !address) {
+      return res.status(400).json({ error: "Method and address required" });
+    }
+
+    // Store in database or environment variables
+    // For now, we'll store in a settings collection (you'll need to create a Settings model)
+    const Settings = mongoose.model("Settings");
+    let settings = await Settings.findOne({ key: "paymentDetails" });
+    
+    if (!settings) {
+      settings = new Settings({ 
+        key: "paymentDetails", 
+        value: {} 
+      });
+    }
+
+    settings.value = settings.value || {};
+    settings.value[method] = {
+      address,
+      additionalInfo: additionalInfo || "",
+      updatedAt: new Date().toISOString(),
+    };
+    settings.markModified("value");
+    await settings.save();
+
+    res.json({ 
+      success: true, 
+      message: `Payment details for ${method} updated successfully`,
+      details: settings.value[method]
+    });
+  } catch (err) {
+    console.error("Error updating payment details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 export default router;

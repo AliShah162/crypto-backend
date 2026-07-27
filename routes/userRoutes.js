@@ -4617,30 +4617,59 @@ router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => 
 // ================= GET PAYMENT DETAILS (PUBLIC) =================
 router.get("/admin/payment-details", async (req, res) => {
   try {
-    // Get payment details from environment variables or database
-    const paymentDetails = {
+    // Default fallback values
+    let paymentDetails = {
       bank: {
-        address: process.env.BANK_ACCOUNT_NUMBER || "Not configured",
-        additionalInfo: process.env.BANK_ADDITIONAL_INFO || "",
-        bankName: process.env.BANK_NAME || "Bank Name",
-        accountHolder: process.env.BANK_ACCOUNT_HOLDER || "Account Holder",
-        ifsc: process.env.BANK_IFSC || "IFSC Code",
+        address: "Not configured",
+        additionalInfo: "",
+        bankName: "",
+        accountHolder: "",
+        ifsc: "",
       },
       crypto: {
-        address: process.env.CRYPTO_ADDRESS || "Not configured",
-        additionalInfo: process.env.CRYPTO_ADDITIONAL_INFO || "Send USDT on BEP20 network",
+        address: "Not configured",
+        additionalInfo: "",
       },
       upi: {
-        address: process.env.UPI_ADDRESS || "Not configured",
-        additionalInfo: process.env.UPI_ADDITIONAL_INFO || "",
+        address: "Not configured",
+        additionalInfo: "",
       },
     };
+
+    // Try to get from database
+    try {
+      const Settings = mongoose.model("Settings");
+      const settings = await Settings.findOne({ key: "paymentDetails" });
+      
+      if (settings && settings.value) {
+        paymentDetails = {
+          bank: {
+            address: settings.value.bank?.address || "Not configured",
+            additionalInfo: settings.value.bank?.additionalInfo || "",
+            bankName: settings.value.bank?.bankName || "",
+            accountHolder: settings.value.bank?.accountHolder || "",
+            ifsc: settings.value.bank?.ifsc || "",
+          },
+          crypto: {
+            address: settings.value.crypto?.address || "Not configured",
+            additionalInfo: settings.value.crypto?.additionalInfo || "",
+          },
+          upi: {
+            address: settings.value.upi?.address || "Not configured",
+            additionalInfo: settings.value.upi?.additionalInfo || "",
+          },
+        };
+      }
+    } catch (dbErr) {
+      console.log("⚠️ Could not fetch from database, using defaults");
+    }
 
     res.json({ 
       success: true, 
       details: paymentDetails 
     });
   } catch (err) {
+    console.error("Error fetching payment details:", err);
     res.status(500).json({ error: err.message });
   }
 });

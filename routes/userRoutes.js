@@ -11,6 +11,7 @@ import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
 import path from "path";
 import fs from "fs";
+import Settings from "../models/Settings.js";
 import { fileURLToPath } from "url";  // ✅ Fixed typo
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1587,47 +1588,6 @@ router.post("/:username/transactions", async (req, res) => {
     res.json({ success: true, warning: "Transaction saved but had issues" });
   }
 });
-
-// ================= CREATE DEPOSIT REQUEST =================
-router.post("/deposit-request", async (req, res) => {
-  try {
-    const { username, amount, cardDetails } = req.body;
-
-    if (!username || !amount) {
-      return res.status(400).json({ error: "Username and amount required" });
-    }
-
-    const user = await User.findOne({
-      username: username.toLowerCase().trim(),
-    });
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const depositRequest = {
-      id: Date.now(),
-      amount: parseFloat(amount),
-      usd: parseFloat(amount),
-      date: new Date().toISOString(),
-      status: "pending",
-      cardDetails: cardDetails || {},
-    };
-
-    user.depositRequests = user.depositRequests || [];
-    user.depositRequests.unshift(depositRequest);
-
-    await user.save();
-
-    res.json({
-      success: true,
-      message: "Deposit request submitted",
-      requestId: depositRequest.id,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ================= GET ALL DEPOSIT REQUESTS (ADMIN ONLY - WITH VIRTUAL ADMIN SUPPORT) =================
 router.get("/admin/all-deposits", validateAdminSession, async (req, res) => {
   try {

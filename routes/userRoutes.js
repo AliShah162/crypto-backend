@@ -4401,8 +4401,12 @@ router.post(
   upload.single("screenshot"),
   async (req, res) => {
     try {
+      // ✅ Get data from FormData
       const { username, amount, currency, paymentMethod } = req.body;
       const screenshot = req.file;
+
+      console.log("📝 Deposit request received:", { username, amount, currency, paymentMethod });
+      console.log("📎 Screenshot file:", screenshot ? screenshot.path : "No file");
 
       if (!username || !amount) {
         return res.status(400).json({ error: "Username and amount required" });
@@ -4422,34 +4426,41 @@ router.post(
         paymentMethod: paymentMethod || "bank",
         date: new Date().toISOString(),
         status: "pending",
-        screenshot: screenshot ? screenshot.path : null, // Cloudinary URL
+        screenshot: screenshot ? screenshot.path : null,
         screenshotFilename: screenshot ? screenshot.filename : null,
         userNote: req.body.note || "",
       };
 
-      user.depositRequests = user.depositRequests || [];
+      // Initialize arrays if they don't exist
+      if (!user.depositRequests) {
+        user.depositRequests = [];
+      }
+      if (!user.transactions) {
+        user.transactions = [];
+      }
+
       user.depositRequests.unshift(depositRequest);
 
       // Add to transactions
-      user.transactions = [
-        {
-          type: "Deposit",
-          amount: parseFloat(amount),
-          currency: currency || "USD",
-          usd: parseFloat(amount),
-          date: new Date().toISOString(),
-          status: "pending",
-          note: `Deposit request via ${paymentMethod} - ${currency}`,
-        },
-        ...(user.transactions || []),
-      ];
+      user.transactions.unshift({
+        type: "Deposit",
+        amount: parseFloat(amount),
+        currency: currency || "USD",
+        usd: parseFloat(amount),
+        date: new Date().toISOString(),
+        status: "pending",
+        paymentMethod: paymentMethod || "bank",
+        note: `Deposit request via ${paymentMethod || "bank"} - ${currency || "USD"}`,
+      });
 
       await user.save();
 
       // Notify admin
       const masterAdmin = await User.findOne({ isMasterAdmin: true });
       if (masterAdmin) {
-        masterAdmin.notifications = masterAdmin.notifications || [];
+        if (!masterAdmin.notifications) {
+          masterAdmin.notifications = [];
+        }
         masterAdmin.notifications.unshift({
           id: Date.now() + Math.random(),
           title: "💰 New Deposit Request",
@@ -4469,14 +4480,14 @@ router.post(
         requestId: depositRequest.id,
       });
     } catch (err) {
-      console.error("Deposit request error:", err);
+      console.error("❌ Deposit request error:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
 
 // ================= ADMIN APPROVE/REJECT DEPOSIT =================
-router.post("/admin/approve-deposit", async (req, res) => {
+router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
@@ -4485,7 +4496,10 @@ router.post("/admin/approve-deposit", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
+    const sessionInfo = req.sessionInfo;
     const { username, requestId, action } = req.body;
+
+    console.log("📝 Approve deposit request:", { username, requestId, action });
 
     if (!username || !requestId || !action) {
       return res.status(400).json({ error: "Username, requestId, and action required" });
@@ -4496,6 +4510,13 @@ router.post("/admin/approve-deposit", async (req, res) => {
     });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    // If virtual admin, verify the user belongs to them
+    if (sessionInfo.isVirtual && user.refKey !== sessionInfo.refKey) {
+      return res.status(403).json({
+        error: "Unauthorized. This user is not under your management.",
+      });
     }
 
     const requestIndex = (user.depositRequests || []).findIndex(
@@ -4530,7 +4551,9 @@ router.post("/admin/approve-deposit", async (req, res) => {
       }
 
       // Notification
-      user.notifications = user.notifications || [];
+      if (!user.notifications) {
+        user.notifications = [];
+      }
       user.notifications.unshift({
         id: Date.now() + Math.random(),
         title: "✅ Deposit Approved",
@@ -4554,7 +4577,9 @@ router.post("/admin/approve-deposit", async (req, res) => {
       }
 
       // Notification
-      user.notifications = user.notifications || [];
+      if (!user.notifications) {
+        user.notifications = [];
+      }
       user.notifications.unshift({
         id: Date.now() + Math.random(),
         title: "❌ Deposit Rejected",
@@ -4579,7 +4604,7 @@ router.post("/admin/approve-deposit", async (req, res) => {
       requestStatus: request.status,
     });
   } catch (err) {
-    console.error("Error in approve-deposit:", err);
+    console.error("❌ Error in approve-deposit:", err);
     res.status(500).json({ error: err.message });
   }
 });

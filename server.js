@@ -6,6 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import userRoutes from "./routes/userRoutes.js";
 import User from "./models/User.js";
+import compression from "compression";
 
 dotenv.config();
 
@@ -62,6 +63,10 @@ app.use(
 // ================= MIDDLEWARE =================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ✅ Add compression
+import compression from "compression";
+app.use(compression());
 
 // ================= TIMEOUTS =================
 app.use((req, res, next) => {

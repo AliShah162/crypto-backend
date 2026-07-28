@@ -404,9 +404,8 @@ router.get("/", async (req, res) => {
 router.get("/:username", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    const user = await User.findOne({ username }).select(
-      "-password -plainPassword",
-    );
+    const user = await User.findOne({ username })
+      .select("-password -plainPassword");  // ✅ Already optimized
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -418,27 +417,37 @@ router.get("/:username", async (req, res) => {
   }
 });
 
-// ================= GET ALL USERS WITH PLAIN PASSWORDS (ADMIN ONLY) =================
 router.get("/admin/all-with-plain-passwords", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
     if (!adminKey || adminKey !== validAdminKey) {
-      return res
-        .status(401)
-        .json({ error: "Unauthorized. Admin access only." });
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 
-    const users = await User.find({});
+    // ✅ ADD PAGINATION
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
 
-    const usersWithPasswords = users.map((user) => {
-      const userObj = user.toObject();
-      delete userObj.password;
-      return userObj;
+    const users = await User.find({})
+      .select("-password")  // Exclude sensitive fields
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 });  // Newest first
+
+    const totalUsers = await User.countDocuments({});
+
+    res.json({
+      users: users,
+      pagination: {
+        total: totalUsers,
+        page: page,
+        limit: limit,
+        totalPages: Math.ceil(totalUsers / limit),
+      }
     });
-
-    res.json(usersWithPasswords);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

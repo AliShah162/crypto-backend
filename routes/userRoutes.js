@@ -13,6 +13,7 @@ import path from "path";
 import fs from "fs";
 import Settings from "../models/Settings.js";
 import { fileURLToPath } from "url";  // ✅ Fixed typo
+import { getCached, setCached, deleteCached, clearCache } from "../lib/cache.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -404,13 +405,23 @@ router.get("/", async (req, res) => {
 router.get("/:username", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
+    
+    // ✅ Check cache
+    const cacheKey = `user_${username}`;
+    const cachedUser = getCached(cacheKey);
+    if (cachedUser) {
+      return res.json(cachedUser);
+    }
+    
     const user = await User.findOne({ username })
-      .select("-password -plainPassword");  // ✅ Already optimized
+      .select("-password -plainPassword")
+      .lean();
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
+    setCached(cacheKey, user, 30);
     res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -574,6 +585,10 @@ router.post("/withdraw", async (req, res) => {
     ];
 
     await user.save();
+    // ✅ Invalidate cache
+    deleteCached(`user_${username}`);
+    deleteCached(`balance_${username}`);
+    deleteCached(`transactions_${username}`);
 
     res.json({
       success: true,
@@ -1204,13 +1219,22 @@ router.post("/:username/notifications", async (req, res) => {
 router.get("/:username/notifications", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    const user = await User.findOne({ username });
+    
+    const cacheKey = `notifications_${username}`;
+    const cachedNotifs = getCached(cacheKey);
+    if (cachedNotifs) {
+      return res.json(cachedNotifs);
+    }
+    
+    const user = await User.findOne({ username }).select("notifications").lean();
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json(user.notifications || []);
+    const notifications = user.notifications || [];
+    setCached(cacheKey, notifications, 15);
+    res.json(notifications);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3136,22 +3160,34 @@ router.post(
   },
 );
 
-// Check KYC status
+// ================= CHECK KYC STATUS =================
 router.get("/:username/kyc-status", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    const user = await User.findOne({ username });
+    
+    const cacheKey = `kyc_${username}`;
+    const cachedKYC = getCached(cacheKey);
+    if (cachedKYC) {
+      return res.json(cachedKYC);
+    }
+    
+    const user = await User.findOne({ username })
+      .select("kycVerified kycSubmitted kycStatus kycSubmittedAt")
+      .lean();
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({
+    const result = {
       kycVerified: user.kycVerified === true,
       kycSubmitted: user.kycSubmitted === true,
       kycStatus: user.kycStatus || "none",
       kycSubmittedAt: user.kycSubmittedAt || null,
-    });
+    };
+    
+    setCached(cacheKey, result, 60);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4456,6 +4492,10 @@ router.post(
       });
 
       await user.save();
+      // ✅ Invalidate cache
+      deleteCached(`user_${username}`);
+      deleteCached(`balance_${username}`);
+      deleteCached(`transactions_${username}`);
       console.log(`✅ Deposit request saved for ${user.username}`);
 
       // Notify admin
@@ -4727,6 +4767,45 @@ router.post("/admin/update-payment-details", async (req, res) => {
     });
   } catch (err) {
     console.error("Error updating payment details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= CACHE STATS (Admin Only) =================
+router.get("/admin/cache-stats", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const stats = {
+      keys: cache.keys(),
+      totalKeys: cache.keys().length,
+      memoryUsage: process.memoryUsage(),
+    };
+    
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= CLEAR CACHE (Admin Only) =================
+router.post("/admin/clear-cache", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    clearCache();
+    res.json({ success: true, message: "Cache cleared successfully" });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

@@ -8,6 +8,7 @@ import userRoutes from "./routes/userRoutes.js";
 import User from "./models/User.js";
 import compression from "compression";
 
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,8 +66,17 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ Add compression
-import compression from "compression";
 app.use(compression());
+// ✅ Add caching headers
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.includes('/admin')) {
+    res.set('Cache-Control', 'public, max-age=60');
+  }
+  if (req.path.includes('/admin')) {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+  next();
+});
 
 // ================= TIMEOUTS =================
 app.use((req, res, next) => {
@@ -164,16 +174,18 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
   for (let i = 0; i < retries; i++) {
     try {
       await mongoose.connect(process.env.MONGO_URI, {
-        maxPoolSize: 20,
-        minPoolSize: 5,
-        maxIdleTimeMS: 30000,
-        socketTimeoutMS: 60000,
-        connectTimeoutMS: 30000,
-        serverSelectionTimeoutMS: 30000,
-        family: 4,
-        retryWrites: true,
-        retryReads: true,
-      });
+  maxPoolSize: 50,
+  minPoolSize: 10,
+  maxIdleTimeMS: 60000,
+  socketTimeoutMS: 60000,
+  connectTimeoutMS: 10000,
+  serverSelectionTimeoutMS: 10000,
+  family: 4,
+  retryWrites: true,
+  retryReads: true,
+  heartbeatFrequencyMS: 10000,
+  bufferCommands: true,
+});
       
       console.log('✅ MongoDB Connected');
       console.log(`   Database: ${mongoose.connection.db.databaseName}`);

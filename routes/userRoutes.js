@@ -442,13 +442,22 @@ router.get("/admin/all-with-plain-passwords", async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const skip = (page - 1) * limit;
 
-    const users = await User.find({})
+    // ✅ SEARCH — filter by username or email before paginating
+    const search = (req.query.search || "").trim();
+    let filter = {};
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+      filter = { $or: [{ username: regex }, { email: regex }] };
+    }
+
+    const users = await User.find(filter)
       .select("-password")  // Exclude sensitive fields
       .skip(skip)
       .limit(limit)
       .sort({ createdAt: -1 });  // Newest first
 
-    const totalUsers = await User.countDocuments({});
+    const totalUsers = await User.countDocuments(filter);
 
     res.json({
       users: users,

@@ -3029,34 +3029,64 @@ router.post("/virtual-admin/login", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// GET USERS FOR SPECIFIC VIRTUAL ADMIN (by refKey)
+// ================= GET USERS FOR SPECIFIC VIRTUAL ADMIN (WITH PAGINATION) =================
 router.get("/virtual-admin/:refKey/users", async (req, res) => {
   try {
     const { refKey } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+    const search = (req.query.search || "").trim();
 
-    if (!refKey) {
-      return res.status(400).json({ error: "Reference key required" });
-    }
-
-    const VirtualAdmin = mongoose.model("VirtualAdmin");
+    // Verify virtual admin exists
     const virtualAdmin = await VirtualAdmin.findOne({ refKey });
-
     if (!virtualAdmin) {
-      return res.status(404).json({ error: "Virtual admin not found" });
+      return res.status(404).json({ 
+        success: false, 
+        error: "Virtual admin not found" 
+      });
     }
 
-    // Get all users who signed up with this refKey
-    const users = await User.find({ refKey }).select("-password");
+    // Build filter
+    let filter = { refKey };
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+      filter = { 
+        refKey, 
+        $or: [{ username: regex }, { email: regex }] 
+      };
+    }
+
+    // Get total count
+    const totalUsers = await User.countDocuments(filter);
+    
+    // Get paginated users
+    const users = await User.find(filter)
+      .select("-password")  // Exclude password hash, keep plainPassword
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 });
 
     res.json({
       success: true,
       adminName: virtualAdmin.adminName,
       refKey: virtualAdmin.refKey,
-      userCount: users.length,
-      users,
+      userCount: totalUsers,
+      users: users,
+      pagination: {
+        total: totalUsers,
+        page: page,
+        limit: limit,
+        totalPages: Math.ceil(totalUsers / limit),
+      }
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Error fetching virtual admin users:", err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
   }
 });
 

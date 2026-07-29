@@ -7,6 +7,8 @@ import { fileURLToPath } from "url";
 import userRoutes from "./routes/userRoutes.js";
 import User from "./models/User.js";
 import compression from "compression";
+import morgan from 'morgan';
+import logger, { trackPerformance } from './lib/logger.js';
 
 
 dotenv.config();
@@ -75,6 +77,31 @@ app.use((req, res, next) => {
   if (req.path.includes('/admin')) {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
+  next();
+});
+
+// ================= LOGGING =================  // ✅ ADD THE LOGGING CODE AFTER THIS POINT
+// Morgan middleware for HTTP request logging
+app.use(morgan('combined', { stream: logger.stream }));
+
+// Custom request logger with performance tracking
+app.use((req, res, next) => {
+  const perf = trackPerformance(`${req.method} ${req.url}`);
+  const start = Date.now();
+  
+  // Log when response finishes
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const status = res.statusCode;
+    const logLevel = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+    
+    logger[logLevel](`${req.method} ${req.url} - ${status} (${duration}ms)`);
+    
+    if (duration > 1000) {
+      logger.warn(`⚠️ SLOW REQUEST: ${req.method} ${req.url} - ${duration}ms`);
+    }
+  });
+  
   next();
 });
 

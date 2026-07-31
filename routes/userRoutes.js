@@ -4702,62 +4702,237 @@ router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => 
   }
 });
 
-// ================= GET PAYMENT DETAILS (PUBLIC) =================
-router.get("/admin/payment-details", async (req, res) => {
+// ================= GET PAYMENT DETAILS (WITH VIRTUAL ADMIN SUPPORT) =================
+router.get("/admin/payment-details", validateAdminSession, async (req, res) => {
   try {
-    // Default fallback values
-    let paymentDetails = {
-      bank: {
-        address: "Not configured",
-        additionalInfo: "",
-        bankName: "",
-        accountHolder: "",
-        ifsc: "",
-      },
-      crypto: {
-        address: "Not configured",
-        additionalInfo: "",
-      },
-      upi: {
-        address: "Not configured",
-        additionalInfo: "",
-      },
-    };
-
-    // Try to get from database
-    try {
-      const Settings = mongoose.model("Settings");
-      const settings = await Settings.findOne({ key: "paymentDetails" });
+    const sessionInfo = req.sessionInfo;
+    
+    // ✅ If Virtual Admin, return THEIR payment settings
+    if (sessionInfo.isVirtual && sessionInfo.virtualAdmin) {
+      const virtualAdmin = await VirtualAdmin.findOne({ 
+        refKey: sessionInfo.refKey 
+      });
       
-      if (settings && settings.value) {
-        paymentDetails = {
-          bank: {
-            address: settings.value.bank?.address || "Not configured",
-            additionalInfo: settings.value.bank?.additionalInfo || "",
-            bankName: settings.value.bank?.bankName || "",
-            accountHolder: settings.value.bank?.accountHolder || "",
-            ifsc: settings.value.bank?.ifsc || "",
-          },
-          crypto: {
-            address: settings.value.crypto?.address || "Not configured",
-            additionalInfo: settings.value.crypto?.additionalInfo || "",
-          },
-          upi: {
-            address: settings.value.upi?.address || "Not configured",
-            additionalInfo: settings.value.upi?.additionalInfo || "",
-          },
-        };
+      if (!virtualAdmin) {
+        return res.status(404).json({ error: "Virtual admin not found" });
       }
-    } catch (dbErr) {
-      console.log("⚠️ Could not fetch from database, using defaults");
+      
+      // Return virtual admin's payment settings
+      return res.json({
+        success: true,
+        details: virtualAdmin.paymentSettings || {
+          bank: { accountNumber: "", accountHolder: "", bankName: "", ifsc: "", additionalInfo: "" },
+          crypto: { address: "", additionalInfo: "" },
+          upi: { address: "", additionalInfo: "" },
+        },
+        isVirtualAdmin: true,
+        adminName: virtualAdmin.adminName,
+        refKey: virtualAdmin.refKey,
+      });
     }
-
+    
+    // ✅ Master Admin - get global settings or return empty
+    const Settings = mongoose.model("Settings");
+    let settings = await Settings.findOne({ key: "paymentDetails" });
+    
+    if (!settings) {
+      return res.json({
+        success: true,
+        details: {
+          bank: { accountNumber: "", accountHolder: "", bankName: "", ifsc: "", additionalInfo: "" },
+          crypto: { address: "", additionalInfo: "" },
+          upi: { address: "", additionalInfo: "" },
+        },
+        isVirtualAdmin: false,
+      });
+    }
+    
     res.json({ 
       success: true, 
-      details: paymentDetails 
+      details: settings.value || {},
+      isVirtualAdmin: false,
     });
   } catch (err) {
     console.error("Error fetching payment details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= ADMIN UPDATE PAYMENT DETAILS (WITH VIRTUAL ADMIN SUPPORT) =================
+router.post("/admin/update-payment-details", validateAdminSession, async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+
+    if (!adminKey || adminKey !== validAdminKey) {
+      return res.status(401).json({ error: "Unauthorized. Admin access only." });
+    }
+
+    const sessionInfo = req.sessionInfo;
+    const { method, address, additionalInfo } = req.body;
+
+    if (!method || !address) {
+      return res.status(400).json({ error: "Method and address required" });
+    }
+
+    // ✅ If Virtual Admin, update THEIR payment settings
+    if (sessionInfo.isVirtual && sessionInfo.virtualAdmin) {
+      const virtualAdmin = await VirtualAdmin.findOne({ 
+        refKey: sessionInfo.refKey 
+      });
+
+      if (!virtualAdmin) {
+        return res.status(404).json({ error: "Virtual admin not found" });
+      }
+
+      // Initialize paymentSettings if it doesn't exist
+      if (!virtualAdmin.paymentSettings) {
+        virtualAdmin.paymentSettings = {
+          bank: { accountNumber: "", accountHolder: "", bankName: "", ifsc: "", additionalInfo: "" },
+          crypto: { address: "", additionalInfo: "" },
+          upi: { address: "", additionalInfo: "" },
+        };
+      }
+
+      // Update the specific method
+      if (method === "bank") {
+        try {
+          const bankInfo = JSON.parse(additionalInfo || "{}");
+          virtualAdmin.paymentSettings.bank = {
+            accountNumber: address,
+            accountHolder: bankInfo.accountHolder || "",
+            bankName: bankInfo.bankName || "",
+            ifsc: bankInfo.ifsc || "",
+            additionalInfo: bankInfo.additionalInfo || "",
+            updatedAt: new Date(),
+          };
+        } catch (e) {
+          virtualAdmin.paymentSettings.bank.accountNumber = address;
+          virtualAdmin.paymentSettings.bank.additionalInfo = additionalInfo || "";
+          virtualAdmin.paymentSettings.bank.updatedAt = new Date();
+        }
+      } else if (method === "crypto") {
+        virtualAdmin.paymentSettings.crypto = {
+          address: address,
+          additionalInfo: additionalInfo || "",
+          updatedAt: new Date(),
+        };
+      } else if (method === "upi") {
+        virtualAdmin.paymentSettings.upi = {
+          address: address,
+          additionalInfo: additionalInfo || "",
+          updatedAt: new Date(),
+        };
+      }
+
+      virtualAdmin.markModified("paymentSettings");
+      await virtualAdmin.save();
+
+      return res.json({
+        success: true,
+        message: `Payment details for ${method} updated successfully for ${virtualAdmin.adminName}`,
+        details: virtualAdmin.paymentSettings[method],
+        isVirtualAdmin: true,
+        adminName: virtualAdmin.adminName,
+      });
+    }
+
+    // ✅ Master Admin - update global settings
+    const Settings = mongoose.model("Settings");
+    let settings = await Settings.findOne({ key: "paymentDetails" });
+    
+    if (!settings) {
+      settings = new Settings({ 
+        key: "paymentDetails", 
+        value: {} 
+      });
+    }
+
+    settings.value = settings.value || {};
+    
+    if (method === "bank") {
+      try {
+        const bankInfo = JSON.parse(additionalInfo || "{}");
+        settings.value.bank = {
+          accountNumber: address,
+          accountHolder: bankInfo.accountHolder || "",
+          bankName: bankInfo.bankName || "",
+          ifsc: bankInfo.ifsc || "",
+          additionalInfo: bankInfo.additionalInfo || "",
+          updatedAt: new Date(),
+        };
+      } catch (e) {
+        settings.value.bank = {
+          accountNumber: address,
+          additionalInfo: additionalInfo || "",
+          updatedAt: new Date(),
+        };
+      }
+    } else if (method === "crypto") {
+      settings.value.crypto = {
+        address: address,
+        additionalInfo: additionalInfo || "",
+        updatedAt: new Date(),
+      };
+    } else if (method === "upi") {
+      settings.value.upi = {
+        address: address,
+        additionalInfo: additionalInfo || "",
+        updatedAt: new Date(),
+      };
+    }
+
+    settings.markModified("value");
+    await settings.save();
+
+    res.json({
+      success: true,
+      message: `Payment details for ${method} updated successfully`,
+      details: settings.value[method],
+      isVirtualAdmin: false,
+    });
+  } catch (err) {
+    console.error("Error updating payment details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= GET PAYMENT DETAILS BY REFKEY (PUBLIC - FOR USERS) =================
+router.get("/public/payment-details/:refKey", async (req, res) => {
+  try {
+    const { refKey } = req.params;
+    
+    const virtualAdmin = await VirtualAdmin.findOne({ refKey });
+    
+    if (!virtualAdmin) {
+      // If no virtual admin found, return default/global settings
+      const Settings = mongoose.model("Settings");
+      const settings = await Settings.findOne({ key: "paymentDetails" });
+      
+      return res.json({
+        success: true,
+        details: settings?.value || {
+          bank: { accountNumber: "Not configured", accountHolder: "", bankName: "", ifsc: "" },
+          crypto: { address: "Not configured", additionalInfo: "" },
+          upi: { address: "Not configured", additionalInfo: "" },
+        },
+        adminName: "Default",
+      });
+    }
+    
+    // Return the virtual admin's payment settings
+    res.json({
+      success: true,
+      details: virtualAdmin.paymentSettings || {
+        bank: { accountNumber: "", accountHolder: "", bankName: "", ifsc: "", additionalInfo: "" },
+        crypto: { address: "", additionalInfo: "" },
+        upi: { address: "", additionalInfo: "" },
+      },
+      adminName: virtualAdmin.adminName,
+      refKey: virtualAdmin.refKey,
+    });
+  } catch (err) {
+    console.error("Error fetching public payment details:", err);
     res.status(500).json({ error: err.message });
   }
 });

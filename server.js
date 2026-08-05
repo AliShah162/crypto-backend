@@ -10,7 +10,6 @@ import compression from "compression";
 import morgan from 'morgan';
 import logger, { trackPerformance } from './lib/logger.js';
 
-
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,25 +23,10 @@ console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME
 const app = express();
 
 // ============================================================
-// ================= CORS - FULLY FIXED =================
+// ================= CORS - FIXED =================
 // ============================================================
 
-// CRITICAL: These headers MUST be set before any routes
-app.use((req, res, next) => {
-  // Allow ALL origins (temporary for testing)
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  
-  // Handle preflight requests immediately
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-// CORS middleware - ALLOW ALL
+// ✅ SINGLE CORS configuration - remove manual headers
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -54,7 +38,7 @@ app.use(
       
       console.log(`🌐 Request from origin: ${origin}`);
       
-      // ✅ ALLOW ALL ORIGINS - This is the fix!
+      // ✅ ALLOW ALL ORIGINS
       return callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -63,12 +47,16 @@ app.use(
   })
 );
 
+// ============================================================
 // ================= MIDDLEWARE =================
+// ============================================================
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ Add compression
 app.use(compression());
+
 // ✅ Add caching headers
 app.use((req, res, next) => {
   if (req.method === 'GET' && !req.path.includes('/admin')) {
@@ -80,7 +68,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= LOGGING =================  // ✅ ADD THE LOGGING CODE AFTER THIS POINT
+// ============================================================
+// ================= LOGGING =================
+// ============================================================
+
 // Morgan middleware for HTTP request logging
 app.use(morgan('combined', { stream: logger.stream }));
 
@@ -105,7 +96,10 @@ app.use((req, res, next) => {
   next();
 });
 
+// ============================================================
 // ================= TIMEOUTS =================
+// ============================================================
+
 app.use((req, res, next) => {
   req.setTimeout(60000, () => {
     res.status(408).json({ error: "REQUEST_TIMEOUT", message: "Request timed out. Please try again." });
@@ -118,30 +112,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// ================= LOGGING =================
-app.use((req, res, next) => {
-  const start = Date.now();
-  console.log(`📥 ${req.method} ${req.url}`);
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    console.log(`${res.statusCode >= 400 ? '❌' : '✅'} ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
-    if (duration > 5000) console.warn(`⚠️ SLOW REQUEST: ${duration}ms`);
-  });
-  next();
-});
-
-// ================= NO GZIP =================
-app.use((req, res, next) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  next();
-});
-
+// ============================================================
 // ================= HEALTH CHECKS =================
+// ============================================================
+
 app.get("/ping", (req, res) => {
-  // Explicitly set CORS headers for this endpoint
-  res.header('Access-Control-Allow-Origin', '*');
   res.json({
     status: "ok",
     message: "Ping successful!",
@@ -155,8 +130,6 @@ app.get("/ping", (req, res) => {
 });
 
 app.get("/api/test", (req, res) => {
-  // Explicitly set CORS headers for this endpoint
-  res.header('Access-Control-Allow-Origin', '*');
   res.json({
     status: "ok",
     message: "Backend is running!",
@@ -176,15 +149,24 @@ app.get("/", (req, res) => {
   });
 });
 
+// ============================================================
 // ================= ROUTES =================
+// ============================================================
+
 app.use("/api/users", userRoutes);
 
+// ============================================================
 // ================= 404 =================
+// ============================================================
+
 app.use((req, res) => {
   res.status(404).json({ error: "NOT_FOUND", message: `Route ${req.method} ${req.url} not found` });
 });
 
+// ============================================================
 // ================= ERROR HANDLER =================
+// ============================================================
+
 app.use((err, req, res, next) => {
   console.error("🚨 Error:", err.message);
   res.status(500).json({
@@ -201,18 +183,18 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
   for (let i = 0; i < retries; i++) {
     try {
       await mongoose.connect(process.env.MONGO_URI, {
-  maxPoolSize: 50,
-  minPoolSize: 10,
-  maxIdleTimeMS: 60000,
-  socketTimeoutMS: 60000,
-  connectTimeoutMS: 10000,
-  serverSelectionTimeoutMS: 10000,
-  family: 4,
-  retryWrites: true,
-  retryReads: true,
-  heartbeatFrequencyMS: 10000,
-  bufferCommands: true,
-});
+        maxPoolSize: 50,
+        minPoolSize: 10,
+        maxIdleTimeMS: 60000,
+        socketTimeoutMS: 60000,
+        connectTimeoutMS: 10000,
+        serverSelectionTimeoutMS: 10000,
+        family: 4,
+        retryWrites: true,
+        retryReads: true,
+        heartbeatFrequencyMS: 10000,
+        bufferCommands: true,
+      });
       
       console.log('✅ MongoDB Connected');
       console.log(`   Database: ${mongoose.connection.db.databaseName}`);
@@ -233,7 +215,10 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
   }
 }
 
+// ============================================================
 // ================= MONGODB EVENTS =================
+// ============================================================
+
 mongoose.connection.on('connected', () => {
   console.log('✅ MongoDB Connected (event)');
 });
@@ -250,7 +235,10 @@ mongoose.connection.on('reconnected', () => {
   console.log('✅ MongoDB Reconnected');
 });
 
+// ============================================================
 // ================= SHUTDOWN =================
+// ============================================================
+
 process.on('SIGINT', async () => {
   console.log('🛑 Shutting down...');
   await mongoose.connection.close();
@@ -258,7 +246,10 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+// ============================================================
 // ================= START =================
+// ============================================================
+
 const PORT = process.env.PORT || 5000;
 
 connectToMongoDB().then(async () => {

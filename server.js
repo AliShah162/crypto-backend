@@ -23,50 +23,76 @@ console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME
 const app = express();
 
 // ============================================================
-// ================= CORS - FIXED =================
+// ================= BULLETPROOF CORS =================
 // ============================================================
 
-// ✅ SINGLE CORS configuration - remove manual headers
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) {
-        console.log("🌐 Request from unknown origin (no origin header)");
-        return callback(null, true);
-      }
-      
-      console.log(`🌐 Request from origin: ${origin}`);
-      
-      // ✅ ALLOW ALL ORIGINS
+// ✅ This MUST be the FIRST middleware
+app.use((req, res, next) => {
+  // Get the origin from the request
+  const origin = req.headers.origin;
+  
+  // Allow all origins (for testing)
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  
+  // Allow credentials
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Allow specific headers
+  res.header('Access-Control-Allow-Headers', 
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id'
+  );
+  
+  // Allow specific methods
+  res.header('Access-Control-Allow-Methods', 
+    'GET, POST, PATCH, DELETE, PUT, OPTIONS'
+  );
+  
+  // Cache preflight for 24 hours
+  res.header('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight immediately
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
+// ✅ Use cors middleware as backup
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      console.log("🌐 Request from unknown origin (no origin header)");
       return callback(null, true);
-    },
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "x-admin-key", "x-session-id", "Accept", "Origin", "X-Requested-With"],
-  })
-);
+    }
+    
+    console.log(`🌐 Request from origin: ${origin}`);
+    
+    // Allow all origins
+    return callback(null, true);
+  },
+  methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
+  credentials: true,
+  allowedHeaders: [
+    "Content-Type", 
+    "Authorization", 
+    "x-admin-key", 
+    "x-session-id", 
+    "Accept", 
+    "Origin", 
+    "X-Requested-With"
+  ],
+  exposedHeaders: ["Content-Length", "X-Requested-With"],
+  maxAge: 86400,
+}));
 
-// ============================================================
 // ================= MIDDLEWARE =================
-// ============================================================
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ✅ Add compression
+// Add compression
 app.use(compression());
-
-// ✅ Add caching headers
-app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.includes('/admin')) {
-    res.set('Cache-Control', 'public, max-age=60');
-  }
-  if (req.path.includes('/admin')) {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  }
-  next();
-});
 
 // ============================================================
 // ================= LOGGING =================
@@ -75,12 +101,10 @@ app.use((req, res, next) => {
 // Morgan middleware for HTTP request logging
 app.use(morgan('combined', { stream: logger.stream }));
 
-// Custom request logger with performance tracking
+// Custom request logger
 app.use((req, res, next) => {
-  const perf = trackPerformance(`${req.method} ${req.url}`);
   const start = Date.now();
   
-  // Log when response finishes
   res.on('finish', () => {
     const duration = Date.now() - start;
     const status = res.statusCode;

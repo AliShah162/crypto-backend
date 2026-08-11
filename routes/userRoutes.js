@@ -3307,7 +3307,6 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
 
-    // Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
@@ -3390,6 +3389,14 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
     user.markModified("kycRecords");
     user.markModified("notifications");
     await user.save();
+
+    // ✅ ✅ ✅ ADD THIS - Clear the cache ✅ ✅ ✅
+    deleteCached(`kyc_${username}`);
+    deleteCached(`user_${username}`);
+    // Also clear any other cached KYC data
+    const cacheKeyPattern = `kyc_${username}`;
+    // If you have a function to clear by pattern, use it
+    // Otherwise, just delete the specific keys
 
     res.json({
       success: true,

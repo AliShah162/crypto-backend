@@ -179,13 +179,30 @@ cloudinary.config({
 });
 
 
+// Helper: Generate optimized Cloudinary URL
+const getOptimizedUrl = (path, width = 300) => {
+  if (!path) return null;
+  const parts = path.split('/');
+  const filename = parts[parts.length - 1];
+  const publicId = filename.split('.')[0];
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  return `https://res.cloudinary.com/${cloudName}/image/upload/w_${width},c_limit,q_auto:good,f_auto/kyc_documents/${publicId}`;
+};
+
 // Configure multer to use Cloudinary storage
 const cloudinaryStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: "kyc_documents",
     allowed_formats: ["jpg", "jpeg", "png", "webp"],
-    transformation: [{ width: 1000, height: 1000, crop: "limit" }],
+    transformation: [
+      { width: 800, height: 800, crop: "limit", quality: "auto:good" }
+    ],
+    eager: [
+      { width: 300, height: 300, crop: "thumb", quality: "auto:low" },
+      { width: 100, height: 100, crop: "thumb", quality: "auto:eco" }
+    ],
+    eager_async: true,
   },
 });
 

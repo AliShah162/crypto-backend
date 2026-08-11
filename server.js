@@ -8,7 +8,7 @@ import userRoutes from "./routes/userRoutes.js";
 import User from "./models/User.js";
 import compression from "compression";
 import morgan from 'morgan';
-import logger, { trackPerformance } from './lib/logger.js';
+import logger from './lib/logger.js';
 
 dotenv.config();
 
@@ -26,50 +26,31 @@ const app = express();
 // ================= BULLETPROOF CORS =================
 // ============================================================
 
-// ✅ This MUST be the FIRST middleware
 app.use((req, res, next) => {
-  // Get the origin from the request
   const origin = req.headers.origin;
-  
-  // Allow all origins (for testing)
   res.header('Access-Control-Allow-Origin', origin || '*');
-  
-  // Allow credentials
   res.header('Access-Control-Allow-Credentials', 'true');
-  
-  // Allow specific headers
   res.header('Access-Control-Allow-Headers', 
     'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id'
   );
-  
-  // Allow specific methods
   res.header('Access-Control-Allow-Methods', 
     'GET, POST, PATCH, DELETE, PUT, OPTIONS'
   );
-  
-  // Cache preflight for 24 hours
   res.header('Access-Control-Max-Age', '86400');
   
-  // Handle preflight immediately
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
-  
   next();
 });
 
-// ✅ Use cors middleware as backup
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) {
       console.log("🌐 Request from unknown origin (no origin header)");
       return callback(null, true);
     }
-    
     console.log(`🌐 Request from origin: ${origin}`);
-    
-    // Allow all origins
     return callback(null, true);
   },
   methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
@@ -88,47 +69,45 @@ app.use(cors({
 }));
 
 // ================= MIDDLEWARE =================
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '20mb' })); // Increased for large images
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// Add compression
-app.use(compression());
+// ================= OPTIMIZED COMPRESSION =================
+app.use(compression({
+  level: 6,
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
 
-// ============================================================
 // ================= LOGGING =================
-// ============================================================
-
-// Morgan middleware for HTTP request logging
 app.use(morgan('combined', { stream: logger.stream }));
 
-// Custom request logger
+// ================= CUSTOM CACHE HEADERS =================
 app.use((req, res, next) => {
-  const start = Date.now();
-  
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    const status = res.statusCode;
-    const logLevel = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
-    
-    logger[logLevel](`${req.method} ${req.url} - ${status} (${duration}ms)`);
-    
-    if (duration > 1000) {
-      logger.warn(`⚠️ SLOW REQUEST: ${req.method} ${req.url} - ${duration}ms`);
-    }
-  });
-  
+  // Cache images and KYC data
+  if (req.path.includes('/kyc') || 
+      req.path.includes('/image') || 
+      req.path.includes('/admin/all-kyc-requests')) {
+    res.set({
+      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+      'CDN-Cache-Control': 'public, max-age=7200',
+      'Vary': 'Accept-Encoding'
+    });
+  }
   next();
 });
 
-// ============================================================
 // ================= TIMEOUTS =================
-// ============================================================
-
 app.use((req, res, next) => {
-  req.setTimeout(60000, () => {
+  req.setTimeout(120000, () => {
     res.status(408).json({ error: "REQUEST_TIMEOUT", message: "Request timed out. Please try again." });
   });
-  res.setTimeout(60000, () => {
+  res.setTimeout(120000, () => {
     if (!res.headersSent) {
       res.status(408).json({ error: "RESPONSE_TIMEOUT", message: "Server is busy. Please try again." });
     }
@@ -210,7 +189,7 @@ async function connectToMongoDB(retries = 5, delay = 5000) {
         maxPoolSize: 50,
         minPoolSize: 10,
         maxIdleTimeMS: 60000,
-        socketTimeoutMS: 60000,
+        socketTimeoutMS: 120000, // Increased for large uploads
         connectTimeoutMS: 10000,
         serverSelectionTimeoutMS: 10000,
         family: 4,
@@ -312,7 +291,6 @@ connectToMongoDB().then(async () => {
     console.log(`📍 MongoDB: ${mongoose.connection.host}`);
     console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌"}`);
     console.log(`\n🔥 Ready for Indian users!`);
-    console.log(`⚠️ MongoDB Pool Size: 20, Min Pool: 5`);
   });
 }).catch((err) => {
   console.error("❌ Failed to start server:", err);

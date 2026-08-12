@@ -3409,64 +3409,105 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
   }
 });
 
-// RESUBMIT KYC (for rejected cases)
-router.post(
-  "/kyc-resubmit",
-  upload.fields([
-    { name: "aadhaarFront", maxCount: 1 },
-    { name: "aadhaarBack", maxCount: 1 },
-    { name: "panFront", maxCount: 1 },
-    { name: "panBack", maxCount: 1 },
-  ]),
-  async (req, res) => {
-    try {
-      const { username } = req.body;
-      const files = req.files;
+// Submit KYC documents - Accepts URLs from Cloudinary (NO FILE UPLOAD)
+router.post("/kyc-submit", async (req, res) => {
+  try {
+    const { username, documents } = req.body;
 
-      if (!username) {
-        return res.status(400).json({ error: "Username required" });
-      }
+    console.log("📝 KYC submission for username:", username);
+    console.log("📦 Documents received:", documents);
 
-      const user = await User.findOne({
-        username: username.toLowerCase().trim(),
+    // Validate username
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: "Username required"
       });
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      const newKycRecord = {
-        id: Date.now(),
-        submittedAt: new Date().toISOString(),
-        documents: {
-          aadhaarFront: files.aadhaarFront?.[0]?.path,
-          aadhaarBack: files.aadhaarBack?.[0]?.path,
-          panFront: files.panFront?.[0]?.path,
-          panBack: files.panBack?.[0]?.path,
-        },
-        status: "pending",
-        isResubmission: true,
-        previousStatus: user.kycStatus,
-      };
-
-      user.kycRecords = user.kycRecords || [];
-      user.kycRecords.push(newKycRecord);
-      user.kycSubmitted = true;
-      user.kycStatus = "pending";
-      user.kycSubmittedAt = new Date().toISOString();
-      user.kycVerified = false;
-
-      await user.save();
-
-      res.json({
-        success: true,
-        message: "KYC documents resubmitted successfully.",
-      });
-    } catch (err) {
-      console.error("KYC resubmission error:", err);
-      res.status(500).json({ error: err.message });
     }
-  },
-);
+
+    // Validate all 4 documents are present
+    if (!documents || !documents.aadhaarFront || !documents.aadhaarBack ||
+        !documents.panFront || !documents.panBack) {
+      return res.status(400).json({
+        success: false,
+        error: "All 4 document images are required"
+      });
+    }
+
+    // Find the user
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+    });
+
+    if (!user) {
+      console.log("❌ User not found:", username);
+      return res.status(404).json({
+        success: false,
+        error: "User not found"
+      });
+    }
+
+    console.log("✅ User found:", user.username);
+
+    // Create KYC record with Cloudinary URLs
+    const kycRecord = {
+      id: Date.now(),
+      submittedAt: new Date().toISOString(),
+      documents: {
+        aadhaarFront: documents.aadhaarFront,
+        aadhaarBack: documents.aadhaarBack,
+        panFront: documents.panFront,
+        panBack: documents.panBack,
+      },
+      status: "pending",
+    };
+
+    // Save to user
+    user.kycRecords = user.kycRecords || [];
+    user.kycRecords.push(kycRecord);
+    user.kycSubmitted = true;
+    user.kycStatus = "pending";
+    user.kycSubmittedAt = new Date().toISOString();
+    user.kycVerified = false;
+
+    await user.save();
+    console.log("✅ KYC record saved for:", user.username);
+
+    // Notify admin
+    try {
+      const masterAdmin = await User.findOne({ isMasterAdmin: true });
+      if (masterAdmin) {
+        masterAdmin.notifications = masterAdmin.notifications || [];
+        masterAdmin.notifications.unshift({
+          id: Date.now() + Math.random(),
+          title: "📄 New KYC Submission",
+          body: `${user.username} has submitted KYC documents for verification.`,
+          time: new Date().toISOString(),
+          date: new Date().toISOString(),
+          read: false,
+          userId: user.username,
+        });
+        await masterAdmin.save();
+        console.log("✅ Admin notification sent");
+      }
+    } catch (notifErr) {
+      console.error("⚠️ Failed to send admin notification:", notifErr);
+      // Don't fail the request if notification fails
+    }
+
+    res.json({
+      success: true,
+      message: "KYC documents submitted successfully. Awaiting admin verification.",
+    });
+
+  } catch (err) {
+    console.error("❌ KYC submission error:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message || "Failed to submit KYC. Please try again."
+    });
+  }
+});
 
 router.get("/download-kyc/:filename", async (req, res) => {
   try {

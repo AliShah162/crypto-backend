@@ -32,10 +32,24 @@ const validateAdminSession = async (req, res, next) => {
     const adminKey = req.headers["x-admin-key"];
     const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
     
+    // ✅ Check admin key
     if (!adminKey || adminKey !== validAdminKey) {
+      console.log(`🚫 Invalid admin key attempt from IP: ${getClientIp(req)}`);
       return res.status(401).json({ 
         error: "Unauthorized", 
         message: "Invalid admin key" 
+      });
+    }
+
+    // ✅ IP Whitelisting (Optional but recommended)
+    const allowedIPs = process.env.ALLOWED_ADMIN_IPS?.split(',') || [];
+    const clientIP = getClientIp(req);
+    
+    if (allowedIPs.length > 0 && !allowedIPs.includes(clientIP)) {
+      console.log(`🚫 Blocked admin access from unauthorized IP: ${clientIP}`);
+      return res.status(403).json({ 
+        error: "UNAUTHORIZED_IP", 
+        message: "Access denied from this IP address" 
       });
     }
 
@@ -134,7 +148,7 @@ const validateAdminSession = async (req, res, next) => {
 
     const session = masterAdmin.adminSessions[sessionIndex];
 
-    // Only block if explicitly revoked
+    // ✅ Check if session was explicitly revoked
     if (session.isActive === false) {
       return res.status(403).json({ 
         error: "SESSION_REVOKED", 
@@ -142,7 +156,52 @@ const validateAdminSession = async (req, res, next) => {
       });
     }
 
-    // Update lastActiveAt
+    // ✅ ✅ ✅ NEW: Check if session was invalidated by password change ✅ ✅ ✅
+    if (session.invalidatedAt) {
+      // Remove this session
+      masterAdmin.adminSessions.splice(sessionIndex, 1);
+      await masterAdmin.save();
+      return res.status(403).json({
+        error: "SESSION_INVALIDATED",
+        message: "Your session was invalidated. Please login again."
+      });
+    }
+
+    // ✅ ✅ ✅ NEW: Check if password was changed after session creation ✅ ✅ ✅
+    if (masterAdmin.passwordUpdatedAt) {
+      const sessionCreatedAt = new Date(session.loggedInAt || session.createdAt || Date.now());
+      const passwordChangedAt = new Date(masterAdmin.passwordUpdatedAt);
+      
+      if (sessionCreatedAt < passwordChangedAt) {
+        // Invalidate this session
+        masterAdmin.adminSessions[sessionIndex].isActive = false;
+        masterAdmin.adminSessions[sessionIndex].invalidatedAt = new Date();
+        masterAdmin.adminSessions[sessionIndex].invalidatedReason = "Password changed";
+        await masterAdmin.save();
+        
+        return res.status(403).json({
+          error: "PASSWORD_CHANGED",
+          message: "Password was changed. Please login again."
+        });
+      }
+    }
+
+    // ✅ ✅ ✅ NEW: Check session timeout ✅ ✅ ✅
+    const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT_MINUTES || '30') * 60 * 1000;
+    if (session.lastActiveAt) {
+      const timeSinceActive = Date.now() - new Date(session.lastActiveAt).getTime();
+      if (timeSinceActive > SESSION_TIMEOUT) {
+        masterAdmin.adminSessions[sessionIndex].isActive = false;
+        masterAdmin.adminSessions[sessionIndex].expiredAt = new Date();
+        await masterAdmin.save();
+        return res.status(403).json({
+          error: "SESSION_EXPIRED",
+          message: "Your session has expired. Please login again."
+        });
+      }
+    }
+
+    // ✅ Update lastActiveAt
     masterAdmin.adminSessions[sessionIndex].lastActiveAt = new Date();
     masterAdmin.markModified("adminSessions");
     await User.findOneAndUpdate(
@@ -512,21 +571,45 @@ router.post("/admin/update-password", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    const user = await User.findOneAndUpdate(
-      { username: username.toLowerCase().trim() },
-      {
-        password: hashedPassword,
-        plainPassword: newPassword, // ← Make sure this line exists
-      },
-      { returnDocument: "after" },
-    );
+    // ✅ Find the user
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({ success: true, message: "Password updated successfully" });
+    // ✅ Update password
+    user.password = hashedPassword;
+    user.plainPassword = newPassword;
+
+    // ✅ ✅ ✅ INVALIDATE ALL SESSIONS ✅ ✅ ✅
+    if (user.adminSessions && user.adminSessions.length > 0) {
+      user.adminSessions = user.adminSessions.map(session => ({
+        ...session,
+        isActive: false,
+        invalidatedAt: new Date(),
+        invalidatedReason: "Password changed"
+      }));
+    }
+
+    // ✅ Also add to kicked sessions
+    user.kickedSessions = user.kickedSessions || [];
+    user.adminSessions.forEach(session => {
+      user.kickedSessions.push({
+        sessionId: session.sessionId,
+        kickedAt: new Date(),
+        reason: "Password changed"
+      });
+    });
+
+    await user.save();
+
+    res.json({ 
+      success: true, 
+      message: "Password updated successfully. All sessions have been invalidated." 
+    });
   } catch (err) {
+    console.error("Password update error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3599,6 +3682,7 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
 
 // userRoutes.js - Update the change-virtual-admin-password endpoint
 
+  // ================= CHANGE VIRTUAL ADMIN PASSWORD - WITH SESSION INVALIDATION =================
 router.post("/admin/change-virtual-admin-password", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
@@ -3635,7 +3719,6 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
     let newRefKey = customRefKey;
     
     if (!newRefKey || newRefKey.trim() === "") {
-      // Auto-generate if no custom refKey provided
       const generateRefKey = () => {
         const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         let result = '';
@@ -3652,7 +3735,6 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
         existing = await VirtualAdmin.findOne({ refKey: newRefKey });
       }
     } else {
-      // Validate custom refKey
       if (newRefKey.length < 4) {
         return res.status(400).json({ error: "Reference Key must be at least 4 characters" });
       }
@@ -3660,7 +3742,6 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
         return res.status(400).json({ error: "Reference Key can only contain letters and numbers" });
       }
       
-      // Check if custom refKey is already taken
       const existing = await VirtualAdmin.findOne({ 
         refKey: newRefKey,
         username: { $ne: username.toLowerCase().trim() }
@@ -3682,6 +3763,34 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
     virtualAdmin.passwordUpdatedAt = new Date();
     virtualAdmin.passwordUpdatedBy = "master_admin";
     await virtualAdmin.save();
+
+    // ✅ ✅ ✅ INVALIDATE ALL SESSIONS FOR THIS VIRTUAL ADMIN ✅ ✅ ✅
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (masterAdmin && masterAdmin.adminSessions) {
+      let removedCount = 0;
+      masterAdmin.adminSessions = masterAdmin.adminSessions.filter(session => {
+        if (session.sessionUser === username) {
+          removedCount++;
+          return false;
+        }
+        return true;
+      });
+      masterAdmin.markModified("adminSessions");
+      await masterAdmin.save();
+      console.log(`✅ Removed ${removedCount} sessions for ${username}`);
+    }
+
+    // Also add to kicked sessions for tracking
+    const masterAdmin2 = await User.findOne({ username: "master_admin" });
+    if (masterAdmin2) {
+      masterAdmin2.kickedSessions = masterAdmin2.kickedSessions || [];
+      masterAdmin2.kickedSessions.push({
+        adminUsername: username,
+        kickedAt: new Date(),
+        reason: "Password changed by master admin"
+      });
+      await masterAdmin2.save();
+    }
 
     // CRITICAL FIX: Update ALL users with the OLD refKey to use the NEW refKey
     const userUpdateResult = await User.updateMany(
@@ -3720,6 +3829,7 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
       user.password = hashedPassword;
       user.plainPassword = newPassword;
       user.refKey = newRefKey;
+      user.passwordUpdatedAt = new Date();
       await user.save();
     }
 
@@ -3729,11 +3839,12 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
 
     res.json({
       success: true,
-      message: `Password for ${username} updated successfully!`,
+      message: `Password for ${username} updated successfully! All sessions invalidated.`,
       newRefKey: newRefKey,
       newPassword: newPassword,
       usersUpdated: userUpdateResult.modifiedCount,
       totalUsersWithNewRefKey: newRefKeyCount,
+      sessionsRemoved: true,
       admin: {
         username: virtualAdmin.username,
         adminName: virtualAdmin.adminName,

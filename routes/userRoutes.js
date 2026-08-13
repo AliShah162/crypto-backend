@@ -136,14 +136,16 @@ const validateAdminSession = async (req, res, next) => {
       (s) => s.sessionId === sessionId
     );
 
-    // If session not found, still allow - master admin uses admin key
+    // ✅ Session ID was sent but no longer exists (cleared by a password
+    // change, a manual "clear sessions" action, or a kick). This must be
+    // treated as an invalidated session, not silently allowed through -
+    // otherwise clearing sessions to force a logout has the opposite
+    // effect of granting permanent unchecked access.
     if (sessionIndex === -1) {
-      req.sessionInfo = {
-        isVirtual: false,
-        sessionUser: "master_admin",
-        refKey: null
-      };
-      return next();
+      return res.status(403).json({
+        error: "SESSION_INVALIDATED",
+        message: "Your session was invalidated. Please login again."
+      });
     }
 
     const session = masterAdmin.adminSessions[sessionIndex];

@@ -3858,16 +3858,11 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
 });
 
 
-
-
 // ============================================================
 // ================= VIRTUAL ADMIN MANAGEMENT =================
 // ============================================================
 
 // In userRoutes.js - verify the kick-virtual-admin endpoint:
-
-// In userRoutes.js - update the kick-virtual-admin endpoint
-
 router.post("/admin/kick-virtual-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];

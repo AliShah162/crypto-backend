@@ -3219,27 +3219,20 @@ router.post("/migrate/add-refkey", async (req, res) => {
 // Submit KYC documents
 router.post(
   "/kyc-submit",
-  upload.fields([
-    { name: "aadhaarFront", maxCount: 1 },
-    { name: "aadhaarBack", maxCount: 1 },
-    { name: "panFront", maxCount: 1 },
-    { name: "panBack", maxCount: 1 },
-  ]),
   async (req, res) => {
     try {
-      const { username } = req.body;
-      const files = req.files;
+      const { username, documents } = req.body;
 
       if (!username) {
         return res.status(400).json({ error: "Username required" });
       }
 
       if (
-        !files ||
-        !files.aadhaarFront ||
-        !files.aadhaarBack ||
-        !files.panFront ||
-        !files.panBack
+        !documents ||
+        !documents.aadhaarFront ||
+        !documents.aadhaarBack ||
+        !documents.panFront ||
+        !documents.panBack
       ) {
         return res
           .status(400)
@@ -3257,10 +3250,10 @@ router.post(
         id: Date.now(),
         submittedAt: new Date().toISOString(),
         documents: {
-          aadhaarFront: files.aadhaarFront?.[0]?.path, // ✅
-          aadhaarBack: files.aadhaarBack?.[0]?.path, // ✅
-          panFront: files.panFront?.[0]?.path, // ✅
-          panBack: files.panBack?.[0]?.path, // ✅
+          aadhaarFront: documents.aadhaarFront, // ✅
+          aadhaarBack: documents.aadhaarBack, // ✅
+          panFront: documents.panFront, // ✅
+          panBack: documents.panBack, // ✅
         },
         status: "pending",
       };

@@ -3770,7 +3770,7 @@ router.get("/download-kyc/:filename", async (req, res) => {
 
 
 // In userRoutes.js - update the validate-session endpoint:
-// In userRoutes.js - Replace the entire /admin/validate-session endpoint
+// In userRoutes.js - Replace the /admin/validate-session endpoint
 
 router.get("/admin/validate-session", validateAdminSession, async (req, res) => {
   try {
@@ -3817,7 +3817,6 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
             requiresReauth: true
           });
         } else {
-          // Kick expired - clear it
           await VirtualAdmin.findOneAndUpdate(
             { username: sessionInfo.sessionUser },
             { $unset: { lastKickedAt: "" } }
@@ -3833,7 +3832,6 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
         );
       }
       
-      // ✅ Return valid
       return res.json({
         valid: true,
         sessionUser: sessionInfo.sessionUser,
@@ -3843,8 +3841,41 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
       });
     }
     
-    // ✅ Master admin validation
+    // ✅ Master admin validation with proper error codes
     if (sessionInfo && !sessionInfo.isVirtual) {
+      // Check if session exists and is active
+      const masterAdmin = await User.findOne({ username: "master_admin" });
+      
+      if (!masterAdmin) {
+        return res.json({
+          valid: false,
+          error: "MASTER_ADMIN_NOT_FOUND",
+          message: "Master admin not found",
+          requiresReauth: true
+        });
+      }
+      
+      // If sessionId exists, verify it's still active
+      if (sessionInfo.sessionId) {
+        const session = masterAdmin.adminSessions.find(
+          (s) => s.sessionId === sessionInfo.sessionId
+        );
+        
+        if (!session || session.isActive === false) {
+          return res.json({
+            valid: false,
+            error: "SESSION_INVALIDATED",
+            message: "Your session has expired. Please login again.",
+            requiresReauth: true
+          });
+        }
+        
+        // Update last active timestamp
+        session.lastActiveAt = new Date();
+        masterAdmin.markModified("adminSessions");
+        await masterAdmin.save();
+      }
+      
       return res.json({
         valid: true,
         sessionUser: sessionInfo.sessionUser || "master_admin",
@@ -3854,19 +3885,22 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
       });
     }
     
-    // ❌ No session info - invalid
+    // ❌ No session info - allow user to continue but mark as unauthenticated
     return res.json({
       valid: false,
-      error: "No session found",
-      message: "Please login again",
-      requiresReauth: true
+      error: "NO_SESSION",
+      message: "No active session found",
+      requiresReauth: false // ← This is key: don't force logout
     });
     
   } catch (err) {
     console.error("Session validation error:", err);
-    res.status(500).json({ 
+    // ✅ Don't return 500 - return a soft error that won't logout the user
+    res.json({ 
       valid: false,
-      error: err.message 
+      error: "VALIDATION_ERROR",
+      message: "Could not validate session",
+      requiresReauth: false
     });
   }
 });

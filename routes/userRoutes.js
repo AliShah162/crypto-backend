@@ -3770,75 +3770,104 @@ router.get("/download-kyc/:filename", async (req, res) => {
 
 
 // In userRoutes.js - update the validate-session endpoint:
-
-// In userRoutes.js - update validate-session GET endpoint
+// In userRoutes.js - Replace the entire /admin/validate-session endpoint
 
 router.get("/admin/validate-session", validateAdminSession, async (req, res) => {
   try {
     const sessionInfo = req.sessionInfo;
     
-    // ✅ Check if the session user has been kicked
-    if (sessionInfo.isVirtual && sessionInfo.virtualAdmin) {
+    // ✅ Virtual admin validation
+    if (sessionInfo && sessionInfo.isVirtual && sessionInfo.virtualAdmin) {
       const virtualAdmin = await VirtualAdmin.findOne({ 
         username: sessionInfo.sessionUser 
       });
       
-      if (virtualAdmin) {
-        // ✅ Check if banned
-        if (virtualAdmin.isBanned) {
-          return res.status(403).json({
+      if (!virtualAdmin) {
+        return res.json({
+          valid: false,
+          error: "Virtual admin not found",
+          message: "Please login again",
+          requiresReauth: true
+        });
+      }
+      
+      // Check if banned
+      if (virtualAdmin.isBanned) {
+        return res.json({
+          valid: false,
+          error: "ADMIN_BANNED",
+          message: "You have been banned from the admin panel",
+          reason: virtualAdmin.banReason,
+          bannedAt: virtualAdmin.bannedAt,
+          requiresReauth: true
+        });
+      }
+      
+      // Check if kicked (within last 20 seconds)
+      if (virtualAdmin.lastKickedAt) {
+        const now = new Date();
+        const timeSinceKick = (now - new Date(virtualAdmin.lastKickedAt)) / 1000;
+        if (timeSinceKick < 20) {
+          return res.json({
             valid: false,
-            error: "ADMIN_BANNED",
-            message: "You have been banned from the admin panel",
-            reason: virtualAdmin.banReason,
-            bannedAt: virtualAdmin.bannedAt
+            error: "SESSION_KICKED",
+            message: "Your session has been terminated by the master admin",
+            kickedAt: virtualAdmin.lastKickedAt,
+            timeRemaining: Math.ceil(20 - timeSinceKick),
+            requiresReauth: true
           });
-        }
-        
-        // ✅ Check if kicked (lastKickedAt within last 20 seconds)
-        if (virtualAdmin.lastKickedAt) {
-          const now = new Date();
-          const timeSinceKick = (now - new Date(virtualAdmin.lastKickedAt)) / 1000;
-          if (timeSinceKick < 20) {
-            return res.status(403).json({
-              valid: false,
-              error: "SESSION_KICKED",
-              message: "Your session has been terminated by the master admin",
-              kickedAt: virtualAdmin.lastKickedAt,
-              timeSinceKick: timeSinceKick
-            });
-          } else {
-            // ✅ Kick expired - clear it automatically
-            await VirtualAdmin.findOneAndUpdate(
-              { username: sessionInfo.sessionUser },
-              { $unset: { lastKickedAt: "" } }
-            );
-            console.log(`✅ Cleared expired kick for ${sessionInfo.sessionUser}`);
-          }
-        }
-        
-        // ✅ Check if inactive - but allow login if not banned
-        if (!virtualAdmin.isActive && !virtualAdmin.isBanned) {
-          // Auto-activate if not banned
+        } else {
+          // Kick expired - clear it
           await VirtualAdmin.findOneAndUpdate(
             { username: sessionInfo.sessionUser },
-            { $set: { isActive: true } }
+            { $unset: { lastKickedAt: "" } }
           );
-          console.log(`✅ Auto-activated ${sessionInfo.sessionUser}`);
         }
       }
+      
+      // Auto-activate if inactive but not banned
+      if (!virtualAdmin.isActive && !virtualAdmin.isBanned) {
+        await VirtualAdmin.findOneAndUpdate(
+          { username: sessionInfo.sessionUser },
+          { $set: { isActive: true } }
+        );
+      }
+      
+      // ✅ Return valid
+      return res.json({
+        valid: true,
+        sessionUser: sessionInfo.sessionUser,
+        isVirtual: true,
+        refKey: sessionInfo.refKey,
+        message: "Session is valid"
+      });
     }
     
-    res.json({
-      valid: true,
-      sessionUser: sessionInfo.sessionUser,
-      isVirtual: sessionInfo.isVirtual,
-      refKey: sessionInfo.refKey,
-      message: "Session is valid"
+    // ✅ Master admin validation
+    if (sessionInfo && !sessionInfo.isVirtual) {
+      return res.json({
+        valid: true,
+        sessionUser: sessionInfo.sessionUser || "master_admin",
+        isVirtual: false,
+        refKey: null,
+        message: "Session is valid"
+      });
+    }
+    
+    // ❌ No session info - invalid
+    return res.json({
+      valid: false,
+      error: "No session found",
+      message: "Please login again",
+      requiresReauth: true
     });
+    
   } catch (err) {
     console.error("Session validation error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      valid: false,
+      error: err.message 
+    });
   }
 });
 

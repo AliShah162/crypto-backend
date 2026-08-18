@@ -721,9 +721,9 @@ router.get("/admin/all-with-plain-passwords", async (req, res) => {
 router.post("/admin/update-password", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -884,10 +884,10 @@ router.post("/withdraw", async (req, res) => {
 router.get("/admin/all-withdrawals", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -929,9 +929,9 @@ router.get("/admin/all-withdrawals", validateAdminSession, async (req, res) => {
 router.post("/admin/approve-withdrawal", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1134,10 +1134,10 @@ router.get("/:username/binary-trades", async (req, res) => {
 router.get("/admin/all-trades", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1216,10 +1216,10 @@ router.post("/:username/pending-trades", async (req, res) => {
 router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1391,10 +1391,10 @@ router.post("/admin/resolve-trade", validateAdminSession, async (req, res) => {
 router.post("/admin/send-notification", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1688,10 +1688,10 @@ router.delete("/:username", async (req, res) => {
 router.post("/admin/freeze-balance", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1902,10 +1902,10 @@ router.post("/:username/transactions", async (req, res) => {
 router.get("/admin/all-deposits", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -1945,10 +1945,10 @@ router.get("/admin/all-deposits", validateAdminSession, async (req, res) => {
 router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -2051,10 +2051,10 @@ router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => 
 router.delete("/admin/clear-completed-trades", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -2133,10 +2133,10 @@ router.delete("/debug/force-delete-all/:username", async (req, res) => {
 router.post("/admin/register-session", async (req, res) => {
   try {
     const { adminKey, userAgent, adminUsername, sessionId } = req.body;
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // ✅ Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       console.error("❌ Invalid admin key:", adminKey);
       return res.status(401).json({ 
         success: false,
@@ -2227,9 +2227,9 @@ router.post("/admin/register-session", async (req, res) => {
 router.get("/admin/sessions", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2326,10 +2326,10 @@ router.post("/admin/session-heartbeat", async (req, res) => {
 router.delete("/admin/sessions/:sessionId", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { sessionId } = req.params;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2380,12 +2380,12 @@ router.delete("/admin/sessions/:sessionId", async (req, res) => {
 router.post("/admin/revoke-others", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { currentSessionId } = req.body;
 
     console.log("🔴 Revoke others called with sessionId:", currentSessionId);
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2438,9 +2438,9 @@ router.post("/admin/revoke-others", async (req, res) => {
 router.get("/admin/all-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -2461,10 +2461,10 @@ router.get("/admin/all-admins", async (req, res) => {
 router.post("/admin/kick-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { adminUsername } = req.body;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -2527,10 +2527,10 @@ router.post("/admin/kick-admin", async (req, res) => {
 router.post("/admin/ban-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { adminUsername, banReason } = req.body;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -2604,10 +2604,10 @@ router.post("/admin/ban-admin", async (req, res) => {
 router.post("/admin/unban-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { adminUsername } = req.body;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -2659,9 +2659,9 @@ router.post("/admin/unban-admin", async (req, res) => {
 router.get("/admin/banned-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized. Admin access only." });
@@ -2774,9 +2774,9 @@ router.post("/admin/temp-clear-sessions", async (req, res) => {
 router.post("/admin/cleanup-sessions", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2819,9 +2819,9 @@ router.post("/admin/cleanup-sessions", async (req, res) => {
 router.post("/admin/clear-all-sessions", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2851,10 +2851,10 @@ router.post("/admin/clear-all-sessions", async (req, res) => {
 router.post("/admin/ban-user", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { sessionId, username, banReason } = req.body;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2949,10 +2949,10 @@ router.post("/admin/ban-user", async (req, res) => {
 router.post("/admin/unban-user", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
     const { username } = req.body;
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -2990,9 +2990,9 @@ router.post("/admin/unban-user", async (req, res) => {
 router.get("/admin/banned-users", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -3013,9 +3013,9 @@ router.get("/admin/banned-users", async (req, res) => {
 router.post("/admin/create-virtual-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res
         .status(401)
         .json({ error: "Unauthorized - Invalid admin key" });
@@ -3084,9 +3084,9 @@ router.post("/admin/create-virtual-admins", async (req, res) => {
 router.get("/admin/virtual-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -3281,9 +3281,12 @@ router.post("/virtual-admin/login", async (req, res) => {
       console.error("❌ Session registration error:", err);
     }
 
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
+
     res.json({
       success: true,
       sessionId: sessionId,
+      adminKey: validAdminKeys[0],
       admin: {
         adminName: freshAdmin.adminName,
         username: freshAdmin.username,
@@ -3362,9 +3365,9 @@ router.get("/virtual-admin/:refKey/users", async (req, res) => {
 router.post("/migrate/add-refkey", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -3497,10 +3500,10 @@ router.get("/:username/kyc-status", async (req, res) => {
 router.get("/admin/all-kyc-requests", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     // Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -3549,9 +3552,9 @@ router.get("/admin/all-kyc-requests", validateAdminSession, async (req, res) => 
 router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -3847,9 +3850,9 @@ router.get("/admin/validate-session", validateAdminSession, async (req, res) => 
 router.post("/admin/change-virtual-admin-password", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4027,9 +4030,9 @@ router.post("/admin/change-virtual-admin-password", async (req, res) => {
 router.post("/admin/kick-virtual-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4092,12 +4095,12 @@ router.post("/admin/kick-virtual-admin", async (req, res) => {
 router.post("/admin/ban-virtual-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     console.log("🔵 Ban request received for:", req.body.username);
     console.log("🔵 Admin Key received:", adminKey);
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4161,12 +4164,12 @@ router.post("/admin/ban-virtual-admin", async (req, res) => {
 router.post("/admin/unban-virtual-admin", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     console.log("🔵 UNBAN - Admin Key received:", adminKey);
     console.log("🔵 UNBAN - Username received:", req.body.username);
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4210,11 +4213,11 @@ router.post("/admin/unban-virtual-admin", async (req, res) => {
 router.get("/admin/banned-virtual-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
     console.log("🔵 GET BANNED - Admin Key:", adminKey);
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4241,9 +4244,9 @@ router.get("/admin/banned-virtual-admins", async (req, res) => {
 router.post("/admin/rename-session", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4295,9 +4298,9 @@ router.post("/admin/rename-session", async (req, res) => {
 router.post("/admin/rename-sessions-by-ip", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4413,9 +4416,9 @@ const clearKickedStatus = async (username) => {
 router.post("/admin/clear-stuck-kicks", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4448,9 +4451,9 @@ router.post("/admin/clear-stuck-kicks", async (req, res) => {
 router.get("/admin/debug-vadmin/:username", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4485,9 +4488,9 @@ router.get("/admin/debug-vadmin/:username", async (req, res) => {
 router.post("/admin/fix-vadmins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4537,9 +4540,9 @@ router.post("/admin/fix-vadmins", async (req, res) => {
 router.get("/admin/all-virtual-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4571,9 +4574,9 @@ router.get("/admin/all-virtual-admins", async (req, res) => {
 router.get("/admin/banned-virtual-admins", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4608,9 +4611,9 @@ router.get("/admin/banned-virtual-admins", async (req, res) => {
 router.post("/admin/rename-sessions-by-user-and-ip", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Master admin only." });
     }
 
@@ -4734,9 +4737,9 @@ router.post("/admin/logout", async (req, res) => {
   try {
     const { sessionId } = req.body;
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -4915,9 +4918,9 @@ router.post(
 router.post("/admin/approve-deposit", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Invalid admin key." });
     }
 
@@ -5094,9 +5097,9 @@ router.get("/admin/payment-details", validateAdminSession, async (req, res) => {
 router.post("/admin/update-payment-details", validateAdminSession, async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 
@@ -5273,9 +5276,9 @@ router.get("/public/payment-details/:refKey", async (req, res) => {
 router.post("/admin/update-payment-details", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 
@@ -5321,9 +5324,9 @@ router.post("/admin/update-payment-details", async (req, res) => {
 router.get("/admin/cache-stats", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 
@@ -5343,9 +5346,9 @@ router.get("/admin/cache-stats", async (req, res) => {
 router.post("/admin/clear-cache", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-    if (!adminKey || adminKey !== validAdminKey) {
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
       return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 

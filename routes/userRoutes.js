@@ -684,19 +684,19 @@ router.get("/admin/all-with-plain-passwords", async (req, res) => {
       filter = { $or: [{ username: regex }, { email: regex }] };
     }
 
-    // ✅ CRITICAL FIX: Exclude BOTH password AND plainPassword
+    // ✅ This route's whole purpose is exposing plainPassword to admins —
+    // keep password (hash) excluded, but plainPassword must stay.
     const users = await User.find(filter)
-      .select("-password -plainPassword")  // ← THIS IS THE KEY FIX
+      .select("-password")
       .skip(skip)
       .limit(limit)
       .sort({ createdAt: -1 })
       .lean();
 
-    // ✅ Extra safety: Remove any remaining sensitive fields
+    // ✅ Extra safety: still strip the password hash, keep plainPassword
     const safeUsers = users.map(user => {
       const safe = { ...user };
       delete safe.password;
-      delete safe.plainPassword;
       return safe;
     });
 

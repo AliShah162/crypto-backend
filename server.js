@@ -1,298 +1,315 @@
-import express from "express";
-import mongoose from "mongoose";
-import cors from "cors";
-import dotenv from "dotenv";
-import path from "path";
-import { fileURLToPath } from "url";
-import userRoutes from "./routes/userRoutes.js";
-import User from "./models/User.js";
-import compression from "compression";
-import morgan from 'morgan';
-import logger from './lib/logger.js';
+/* ================= LOGIN ================= */
+export function LoginScreen({ go, onAuth, onAdmin }) {
+  const [f, sf] = useState({ user: "", pw: "" });
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
-dotenv.config();
+  const handleLogin = async () => {
+    setErr("");
+    const cleanUser = f.user.toLowerCase().trim();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+    if (!cleanUser) return setErr("Please enter your username.");
+    if (!f.pw) return setErr("Please enter your password.");
 
-console.log("🔍 Checking environment variables:");
-console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
-console.log("ADMIN_API_KEY exists:", !!process.env.ADMIN_API_KEY);
-console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME);
+    // ========== MASTER ADMIN LOGIN ==========
+    if (cleanUser === "admin" || cleanUser === "master_admin") {
+      try {
+        setLoading(true);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-const app = express();
+        const adminResponse = await fetch(`${API_URL}/api/users/admin/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: cleanUser,
+            password: f.pw
+          }),
+          signal: controller.signal,
+        });
 
-// ============================================================
-// ================= BULLETPROOF CORS =================
-// ============================================================
+        clearTimeout(timeoutId);
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 
-    'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-admin-key, x-session-id'
-  );
-  res.header('Access-Control-Allow-Methods', 
-    'GET, POST, PATCH, DELETE, PUT, OPTIONS'
-  );
-  res.header('Access-Control-Max-Age', '86400');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+        // ✅ Check if response is OK before parsing
+        if (!adminResponse.ok) {
+          const errorText = await adminResponse.text();
+          console.error("Admin login error response:", errorText);
+          
+          if (adminResponse.status === 404) {
+            setErr("⚠️ Admin login endpoint not found. Please check backend deployment.");
+            setLoading(false);
+            return;
+          }
+          
+          setErr(`Server error (${adminResponse.status}). Please try again.`);
+          setLoading(false);
+          return;
+        }
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) {
-      console.log("🌐 Request from unknown origin (no origin header)");
-      return callback(null, true);
-    }
-    console.log(`🌐 Request from origin: ${origin}`);
-    return callback(null, true);
-  },
-  methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
-  credentials: true,
-  allowedHeaders: [
-    "Content-Type", 
-    "Authorization", 
-    "x-admin-key", 
-    "x-session-id", 
-    "Accept", 
-    "Origin", 
-    "X-Requested-With"
-  ],
-  exposedHeaders: ["Content-Length", "X-Requested-With"],
-  maxAge: 86400,
-}));
+        const adminData = await adminResponse.json();
 
-// ================= MIDDLEWARE =================
-app.use(express.json({ limit: '20mb' })); // Increased for large images
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
-
-// ================= OPTIMIZED COMPRESSION =================
-app.use(compression({
-  level: 6,
-  threshold: 1024,
-  filter: (req, res) => {
-    if (req.headers['x-no-compression']) {
-      return false;
-    }
-    return compression.filter(req, res);
-  }
-}));
-
-// ================= LOGGING =================
-app.use(morgan('combined', { stream: logger.stream }));
-
-// ================= CUSTOM CACHE HEADERS =================
-app.use((req, res, next) => {
-  // Cache images and KYC data
-  if (req.path.includes('/kyc') || 
-      req.path.includes('/image') || 
-      req.path.includes('/admin/all-kyc-requests')) {
-    res.set({
-      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
-      'CDN-Cache-Control': 'public, max-age=7200',
-      'Vary': 'Accept-Encoding'
-    });
-  }
-  next();
-});
-
-// ================= TIMEOUTS =================
-app.use((req, res, next) => {
-  req.setTimeout(120000, () => {
-    res.status(408).json({ error: "REQUEST_TIMEOUT", message: "Request timed out. Please try again." });
-  });
-  res.setTimeout(120000, () => {
-    if (!res.headersSent) {
-      res.status(408).json({ error: "RESPONSE_TIMEOUT", message: "Server is busy. Please try again." });
-    }
-  });
-  next();
-});
-
-// ============================================================
-// ================= HEALTH CHECKS =================
-// ============================================================
-
-app.get("/ping", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Ping successful!",
-    env: {
-      mongoUri: !!process.env.MONGO_URI,
-      adminKey: !!process.env.ADMIN_API_KEY,
-      cloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
-    },
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/api/test", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Backend is running!",
-    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "Crypto Backend",
-    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-    version: "2.1.0",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// ============================================================
-// ================= ROUTES =================
-// ============================================================
-
-app.use("/api/users", userRoutes);
-
-// ============================================================
-// ================= 404 =================
-// ============================================================
-
-app.use((req, res) => {
-  res.status(404).json({ error: "NOT_FOUND", message: `Route ${req.method} ${req.url} not found` });
-});
-
-// ============================================================
-// ================= ERROR HANDLER =================
-// ============================================================
-
-app.use((err, req, res, next) => {
-  console.error("🚨 Error:", err.message);
-  res.status(500).json({
-    error: "INTERNAL_SERVER_ERROR",
-    message: process.env.NODE_ENV === "production" ? "Something went wrong." : err.message,
-  });
-});
-
-// ============================================================
-// ================= MONGODB CONNECTION =================
-// ============================================================
-
-async function connectToMongoDB(retries = 5, delay = 5000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await mongoose.connect(process.env.MONGO_URI, {
-        maxPoolSize: 50,
-        minPoolSize: 10,
-        maxIdleTimeMS: 60000,
-        socketTimeoutMS: 120000, // Increased for large uploads
-        connectTimeoutMS: 10000,
-        serverSelectionTimeoutMS: 10000,
-        family: 4,
-        retryWrites: true,
-        retryReads: true,
-        heartbeatFrequencyMS: 10000,
-        bufferCommands: true,
-      });
-      
-      console.log('✅ MongoDB Connected');
-      console.log(`   Database: ${mongoose.connection.db.databaseName}`);
-      console.log(`   Host: ${mongoose.connection.host}`);
-      console.log(`   Pool Size: 20`);
-      return;
-    } catch (err) {
-      console.error(`❌ MongoDB attempt ${i + 1} failed:`, err.message);
-      if (i < retries - 1) {
-        const wait = Math.min(delay * Math.pow(1.5, i), 30000);
-        console.log(`🔄 Retrying in ${wait/1000}s...`);
-        await new Promise(r => setTimeout(r, wait));
-      } else {
-        console.error('❌ All MongoDB connection attempts failed');
-        process.exit(1);
+        if (adminData.success) {
+          // ✅ Store admin session data
+          localStorage.setItem('adminSession', JSON.stringify({
+            username: adminData.username,
+            adminKey: adminData.adminKey,
+            sessionId: adminData.sessionId,
+            expiresAt: adminData.expiresAt,
+            loggedInAt: new Date().toISOString(),
+          }));
+          
+          localStorage.setItem('adminKey', adminData.adminKey);
+          localStorage.setItem('admin_session_id', adminData.sessionId);
+          localStorage.setItem('tabRole', 'admin');
+          
+          window.dispatchEvent(new CustomEvent("adminLogin", {
+            detail: adminData
+          }));
+          
+          const adminSession = {
+            username: "admin",
+            email: "admin@coinbase.com",
+            fullName: "Administrator",
+            role: "admin",
+            loggedInAt: Date.now(),
+            sessionId: adminData.sessionId,
+            adminKey: adminData.adminKey,
+          };
+          
+          await onAuth(adminSession);
+          onAdmin?.();
+          setLoading(false);
+          return;
+        } else {
+          setErr(adminData.error || "Admin login failed");
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.error("Admin login error:", err);
+        if (err.name === 'AbortError') {
+          setErr("⏳ Admin login is taking too long. Please try again.");
+        } else {
+          setErr("Network error. Please check your connection.");
+        }
+        setLoading(false);
+        return;
       }
     }
-  }
-}
 
-// ============================================================
-// ================= MONGODB EVENTS =================
-// ============================================================
+    // ========== CHECK FOR VIRTUAL ADMIN ==========
+    if (cleanUser.startsWith('vadmin')) {
+      try {
+        setLoading(true);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-mongoose.connection.on('connected', () => {
-  console.log('✅ MongoDB Connected (event)');
-});
+        const vaResponse = await fetch(`${API_URL}/api/users/virtual-admin/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: cleanUser, refKey: f.pw }),
+          signal: controller.signal,
+        });
 
-mongoose.connection.on('error', (err) => {
-  console.error('❌ MongoDB Error:', err.message);
-});
+        clearTimeout(timeoutId);
 
-mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ MongoDB Disconnected');
-});
+        // ✅ Check if response is OK before parsing
+        if (!vaResponse.ok) {
+          const errorText = await vaResponse.text();
+          console.error("Virtual admin login error response:", errorText);
+          // Continue to regular login if virtual admin endpoint fails
+        } else {
+          const vaData = await vaResponse.json();
 
-mongoose.connection.on('reconnected', () => {
-  console.log('✅ MongoDB Reconnected');
-});
+          if (vaData.success) {
+            console.log("✅ Virtual admin login success:", vaData.admin);
 
-// ============================================================
-// ================= SHUTDOWN =================
-// ============================================================
+            // ✅ Clear old sessions
+            localStorage.removeItem("adminApiKey");
+            localStorage.removeItem("admin_session_id");
+            localStorage.removeItem("tabRole");
+            localStorage.removeItem("session");
 
-process.on('SIGINT', async () => {
-  console.log('🛑 Shutting down...');
-  await mongoose.connection.close();
-  console.log('✅ MongoDB connection closed');
-  process.exit(0);
-});
+            // ✅ Store virtual admin session
+            localStorage.setItem("virtualAdmin", JSON.stringify(vaData.admin));
+            localStorage.setItem("tabRole", "virtual_admin");
 
-// ============================================================
-// ================= START =================
-// ============================================================
+            // ✅ Also store admin key if provided
+            if (vaData.adminKey) {
+              localStorage.setItem('adminKey', vaData.adminKey);
+              localStorage.setItem('admin_session_id', vaData.sessionId);
+            }
 
-const PORT = process.env.PORT || 5000;
-
-connectToMongoDB().then(async () => {
-  // Add refKey field
-  try {
-    const result = await User.updateMany(
-      { refKey: { $exists: false } },
-      { $set: { refKey: null } }
-    );
-    console.log(`✅ refKey field added to ${result.modifiedCount} users`);
-  } catch (err) {
-    console.log("⚠️ refKey migration note:", err.message);
-  }
-
-  // Create virtual admins
-  try {
-    const VirtualAdmin = mongoose.model("VirtualAdmin");
-    const count = await VirtualAdmin.countDocuments();
-    if (count === 0) {
-      console.log("📝 Creating default virtual admins...");
-      await VirtualAdmin.insertMany([
-        { adminName: "Admin 1", username: "vadmin1", refKey: "aB9xK2mPq7", email: "vadmin1@example.com" },
-        { adminName: "Admin 2", username: "vadmin2", refKey: "cD4yL3nRt8", email: "vadmin2@example.com" },
-        { adminName: "Admin 3", username: "vadmin3", refKey: "eF7zM1pWb5", email: "vadmin3@example.com" },
-        { adminName: "Admin 4", username: "vadmin4", refKey: "gH2kX5qJv9", email: "vadmin4@example.com" },
-        { adminName: "Admin 5", username: "vadmin5", refKey: "iJ6rT8yUc3", email: "vadmin5@example.com" },
-      ]);
-      console.log(`✅ Created 5 virtual admins`);
+            window.dispatchEvent(new CustomEvent("virtualAdminLogin", { detail: vaData.admin }));
+            setLoading(false);
+            return;
+          } else if (vaData.error === "ADMIN_BANNED") {
+            setErr(`🚫 Your admin account has been banned.\nReason: ${vaData.reason || "No reason provided"}`);
+            setLoading(false);
+            return;
+          } else if (vaData.error === "ADMIN_KICKED") {
+            setErr(`⏳ Session terminated. Please wait ${vaData.timeRemaining || 20} seconds.`);
+            setLoading(false);
+            return;
+          }
+        }
+        console.log("Not a virtual admin, trying regular login...");
+      } catch (err) {
+        console.log("Virtual admin check failed:", err.message);
+        // Continue to regular login
+      }
     }
-  } catch (err) {
-    console.log("⚠️ Virtual admin creation note:", err.message);
-  }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 MongoDB: ${mongoose.connection.host}`);
-    console.log(`📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌"}`);
-    console.log(`\n🔥 Ready for Indian users!`);
-  });
-}).catch((err) => {
-  console.error("❌ Failed to start server:", err);
-  process.exit(1);
-});
+    // ========== REGULAR USER LOGIN ==========
+    try {
+      setLoading(true);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(`${API_URL}/api/users/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: cleanUser,
+          password: f.pw
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // ✅ Check if response is OK before parsing
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Login error response:", errorText);
+        
+        if (response.status === 404) {
+          setErr("⚠️ Login endpoint not found. Please check backend deployment.");
+          setLoading(false);
+          return;
+        }
+        
+        setErr(`Server error (${response.status}). Please try again.`);
+        setLoading(false);
+        return;
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (e) {
+        console.error("Failed to parse JSON:", e);
+        setErr("📶 Server returned invalid response. Please try again.");
+        setLoading(false);
+        return;
+      }
+
+      if (data.error) {
+        console.log("Login error:", data);
+        
+        switch (data.error) {
+          case "BANNED":
+            setErr("Your account has been banned.");
+            break;
+          case "ADMIN_BANNED":
+            const banReason = data.reason || data.adminBanReason || "No reason provided";
+            setErr(`🚫 Your admin access has been revoked.\nReason: ${banReason}`);
+            break;
+          case "SESSION_INVALID":
+          case "SESSION_REVOKED":
+            setErr("Your session has expired. Please login again.");
+            break;
+          default:
+            setErr(data.message || data.error || "Invalid username or password. Please try again.");
+        }
+        
+        setLoading(false);
+        return;
+      }
+
+      if (!data.username) {
+        console.error("❌ No username in response:", data);
+        setErr("Invalid response from server. Please try again.");
+        setLoading(false);
+        return;
+      }
+
+      console.log(`✅ Login successful for: ${data.username}`);
+      
+      await onAuth({
+        username: data.username,
+        email: data.email,
+        fullName: data.fullName || "",
+        role: data.role || "user",
+        phone: data.phone || "",
+        dob: data.dob || "",
+        country: data.country || "",
+        loggedInAt: Date.now(),
+      });
+      
+    } catch (e) {
+      console.error("❌ LOGIN ERROR:", e);
+      
+      if (e.name === 'AbortError') {
+        setErr("⏳ Login is taking too long. Please check your connection and try again.");
+      } else if (e.message?.includes("NetworkError") || e.message?.includes("Failed to fetch")) {
+        setErr("📶 Network error. Please check your internet connection.");
+      } else {
+        setErr(`Network error: ${e.message || "Please check if the server is running."}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      flex: 1, display: "flex", flexDirection: "column",
+      justifyContent: "center", padding: 22,
+    }}>
+      <BackButton onClick={() => { go("welcome"); setErr(""); }} />
+
+      <div style={{ fontSize: 25, fontWeight: 900, color: T.text, marginBottom: 24 }}>
+        Welcome Back 👋
+      </div>
+
+      <ErrorBox msg={err} />
+      <Input
+        label="USERNAME" 
+        val={f.user} 
+        placeholder="Enter your username"
+        set={(v) => sf((p) => ({ ...p, user: v }))}
+      />
+      <Input
+        label="PASSWORD" 
+        type="password" 
+        placeholder="Enter your password"
+        val={f.pw} 
+        set={(v) => sf((p) => ({ ...p, pw: v }))}
+      />
+
+      <PB 
+        lbl={loading ? "Signing in…" : "Sign In"} 
+        onClick={handleLogin} 
+        dis={loading}
+      />
+      
+      {/* Help text */}
+      <div style={{ 
+        marginTop: 12, 
+        textAlign: "center", 
+        fontSize: 10, 
+        color: T.dim,
+        background: "rgba(0,229,176,0.05)",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid rgba(0,229,176,0.1)",
+        maxWidth: "100%",
+        wordWrap: "break-word",
+        lineHeight: 1.4
+      }}>
+        ⚡ If the app is slow to load, close it, wait 5 seconds, and try again.
+      </div>
+    </div>
+  );
+}

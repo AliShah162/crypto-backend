@@ -12,8 +12,10 @@ import { CloudinaryStorage } from "multer-storage-cloudinary";
 import path from "path";
 import fs from "fs";
 import Settings from "../models/Settings.js";
-import { fileURLToPath } from "url";  // ✅ Fixed typo
+import { fileURLToPath } from "url"; 
 import { getCached, setCached, deleteCached, clearCache } from "../lib/cache.js";
+
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,21 +29,156 @@ const __dirname = path.dirname(__filename);
 const router = express.Router();
 // In userRoutes.js - update validateAdminSession middleware
 
-const validateAdminSession = async (req, res, next) => {
+router.get("/test", (req, res) => {
+  res.json({ 
+    success: true, 
+    message: "Routes are working!",
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ============================================================
+// ================= ADMIN LOGIN (SECURE) =================
+// ============================================================
+
+router.post("/admin/login", async (req, res) => {
   try {
-    const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
-    
-    // ✅ Check admin key
-    if (!adminKey || adminKey !== validAdminKey) {
-      console.log(`🚫 Invalid admin key attempt from IP: ${getClientIp(req)}`);
-      return res.status(401).json({ 
-        error: "Unauthorized", 
-        message: "Invalid admin key" 
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false,
+        error: "Username and password required" 
       });
     }
 
-    // ✅ IP Whitelisting (Optional but recommended)
+    // ✅ Get admin credentials from environment
+    const adminUsername = process.env.ADMIN_USERNAME || "admin";
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (!adminPassword) {
+      console.error("❌ ADMIN_PASSWORD not set in environment!");
+      return res.status(500).json({ 
+        success: false,
+        error: "Server configuration error" 
+      });
+    }
+
+    // ✅ Verify credentials
+    if (username !== adminUsername || password !== adminPassword) {
+      console.log(`❌ Failed admin login attempt: ${username} from IP: ${getClientIp(req)}`);
+      return res.status(401).json({ 
+        success: false,
+        error: "Invalid credentials" 
+      });
+    }
+
+    // ✅ Generate session
+    const sessionId = generateSessionId();
+    const ipAddress = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+    const deviceInfo = getDeviceInfo(userAgent);
+    const browser = getBrowserInfo(userAgent);
+
+    // ✅ Find or create master admin
+    let masterAdmin = await User.findOne({ username: "master_admin" });
+    
+    if (!masterAdmin) {
+      masterAdmin = await User.create({
+        username: "master_admin",
+        email: "master@admin.com",
+        password: await bcrypt.hash(adminPassword, 10),
+        role: "admin",
+        isMasterAdmin: true,
+        adminSessions: [],
+      });
+      console.log("✅ Created master admin");
+    }
+
+    // ✅ Register session
+    masterAdmin.adminSessions = masterAdmin.adminSessions || [];
+    masterAdmin.adminSessions.push({
+      sessionId: sessionId,
+      ipAddress: ipAddress,
+      userAgent: userAgent,
+      deviceInfo: `${browser} - ${deviceInfo}`,
+      loggedInAt: new Date(),
+      lastActiveAt: new Date(),
+      isActive: true,
+      sessionUser: "master_admin",
+      customName: null,
+    });
+
+    // ✅ Keep only last 200 sessions
+    if (masterAdmin.adminSessions.length > 200) {
+      masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-200);
+    }
+
+    masterAdmin.markModified("adminSessions");
+    await masterAdmin.save();
+
+    // ✅ Get admin key from environment
+    const adminKey = process.env.ADMIN_API_KEYS?.split(',')[0] || process.env.ADMIN_API_KEY || "admin123456";
+
+    // ✅ Set expiry (24 hours)
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    console.log(`✅ Admin logged in: ${username} from IP: ${ipAddress}`);
+
+    res.json({
+      success: true,
+      username: "master_admin",
+      adminKey: adminKey,
+      sessionId: sessionId,
+      expiresAt: expiresAt.toISOString(),
+      message: "Login successful",
+    });
+
+  } catch (err) {
+    console.error("❌ Admin login error:", err);
+    res.status(500).json({ 
+      success: false,
+      error: err.message 
+    });
+  }
+});
+
+
+
+const validateAdminSession = async (req, res, next) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
+    
+// ✅ Check against multiple valid keys
+if (!adminKey || !validAdminKeys.includes(adminKey)) {
+  console.log(`🚫 Invalid admin key attempt from IP: ${getClientIp(req)}`);
+  return res.status(401).json({ 
+    error: "Unauthorized", 
+    message: "Invalid admin key" 
+  });
+}
+
+// ✅ Additional security: Check if this key is being used from too many IPs
+const keyUsageKey = `key_usage_${adminKey}`;
+const keyUsage = getCached(keyUsageKey) || {};
+const clientIP = getClientIp(req);
+
+// Track key usage
+if (Object.keys(keyUsage).length > 0 && !keyUsage[clientIP]) {
+  console.log(`⚠️ Admin key used from new IP: ${clientIP}`);
+}
+
+keyUsage[clientIP] = Date.now();
+setCached(keyUsageKey, keyUsage, 3600); // Cache for 1 hour
+
+// If key used from > 5 different IPs, it might be compromised
+if (Object.keys(keyUsage).length > 5) {
+  console.log(`🚨 Admin key used from ${Object.keys(keyUsage).length} different IPs!`);
+  // You could implement auto-revocation here
+}
+
+    //  IP Whitelisting (Optional but recommended)
     const allowedIPs = process.env.ALLOWED_ADMIN_IPS?.split(',') || [];
     const clientIP = getClientIp(req);
     
@@ -506,21 +643,40 @@ router.get("/:username", async (req, res) => {
   }
 });
 
+// ============================================================
+// ================= GET ALL USERS (SECURE) =================
+// ============================================================
+
 router.get("/admin/all-with-plain-passwords", async (req, res) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-    const validAdminKey = process.env.ADMIN_API_KEY || "admin123456";
-
-    if (!adminKey || adminKey !== validAdminKey) {
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
+    
+    // ✅ Check against multiple valid keys
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
+      console.log(`🚫 Invalid admin key attempt: ${adminKey?.substring(0, 8)}...`);
       return res.status(401).json({ error: "Unauthorized. Admin access only." });
     }
 
-    // ✅ ADD PAGINATION
+    // ✅ IP Whitelist check for this sensitive endpoint
+    const trustedIPs = (process.env.TRUSTED_ADMIN_IPS || '').split(',').filter(Boolean);
+    const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
+    
+    if (process.env.NODE_ENV === 'production' && trustedIPs.length > 0) {
+      if (!trustedIPs.includes(clientIP)) {
+        console.log(`🚫 Sensitive endpoint access denied for IP: ${clientIP}`);
+        return res.status(403).json({ 
+          error: "ACCESS_DENIED", 
+          message: "This endpoint is restricted to trusted IPs only." 
+        });
+      }
+    }
+
+    // ✅ Pagination
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
+    const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
-    // ✅ SEARCH — filter by username or email before paginating
     const search = (req.query.search || "").trim();
     let filter = {};
     if (search) {
@@ -529,16 +685,26 @@ router.get("/admin/all-with-plain-passwords", async (req, res) => {
       filter = { $or: [{ username: regex }, { email: regex }] };
     }
 
+    // ✅ CRITICAL FIX: Exclude BOTH password AND plainPassword
     const users = await User.find(filter)
-      .select("-password")  // Exclude sensitive fields
+      .select("-password -plainPassword")  // ← THIS IS THE KEY FIX
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 });  // Newest first
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // ✅ Extra safety: Remove any remaining sensitive fields
+    const safeUsers = users.map(user => {
+      const safe = { ...user };
+      delete safe.password;
+      delete safe.plainPassword;
+      return safe;
+    });
 
     const totalUsers = await User.countDocuments(filter);
 
     res.json({
-      users: users,
+      users: safeUsers,
       pagination: {
         total: totalUsers,
         page: page,
@@ -547,6 +713,7 @@ router.get("/admin/all-with-plain-passwords", async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("Error fetching users:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5189,4 +5356,155 @@ router.post("/admin/clear-cache", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+
+
+
+// ============================================================
+// ================= SECURITY AUDIT DASHBOARD =================
+// ============================================================
+
+router.get("/admin/security-audit", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
+    
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Get admin sessions
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    const sessions = masterAdmin?.adminSessions || [];
+    
+    // Analyze suspicious activity
+    const ipCounts = {};
+    const recentActivity = [];
+    
+    sessions.forEach(s => {
+      if (s.ipAddress) {
+        ipCounts[s.ipAddress] = (ipCounts[s.ipAddress] || 0) + 1;
+      }
+      if (s.lastActiveAt) {
+        recentActivity.push({
+          ip: s.ipAddress,
+          deviceInfo: s.deviceInfo,
+          lastActive: s.lastActiveAt,
+          isActive: s.isActive !== false,
+          user: s.sessionUser
+        });
+      }
+    });
+    
+    const suspiciousIPs = Object.entries(ipCounts)
+      .filter(([ip, count]) => count > 3)
+      .map(([ip, count]) => ({ ip, sessionCount: count }));
+    
+    // Get blocked IPs from environment
+    const blockedIPs = (process.env.BLOCKED_IPS || '').split(',').filter(Boolean);
+    
+    // Get trusted IPs
+    const trustedIPs = (process.env.TRUSTED_ADMIN_IPS || '').split(',').filter(Boolean);
+    
+    // Check for any admin accounts that might be compromised
+    const adminUsers = await User.find({ role: 'admin' }).select('username email isAdminBanned adminBannedAt');
+    
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      stats: {
+        totalSessions: sessions.length,
+        activeSessions: sessions.filter(s => s.isActive !== false).length,
+        suspiciousIPs: suspiciousIPs.length,
+        blockedIPs: blockedIPs.length,
+        trustedIPs: trustedIPs.length,
+        totalAdmins: adminUsers.length,
+      },
+      security: {
+        blockedIPs: blockedIPs,
+        trustedIPs: trustedIPs,
+        suspiciousIPs: suspiciousIPs,
+        adminUsers: adminUsers.map(u => ({
+          username: u.username,
+          email: u.email,
+          isBanned: u.isAdminBanned || false,
+          bannedAt: u.adminBannedAt
+        })),
+      },
+      recentActivity: recentActivity.slice(0, 20),
+      recommendations: {
+        rotateKeys: sessions.length > 10 ? "Consider rotating admin keys" : "OK",
+        blockIPs: suspiciousIPs.length > 0 ? `Consider blocking: ${suspiciousIPs.map(s => s.ip).join(', ')}` : "OK",
+        reviewAdmins: adminUsers.filter(u => u.isAdminBanned).length > 0 ? "Some admins are banned" : "OK"
+      }
+    });
+  } catch (err) {
+    console.error("Error in security audit:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// ============================================================
+// ================= EMERGENCY CLEAR ALL SESSIONS =================
+// ============================================================
+
+router.post("/admin/emergency-clear-sessions", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
+    
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // ✅ Require a confirmation token for safety
+    const { confirm } = req.body;
+    if (confirm !== 'I_UNDERSTAND_THIS_WILL_LOGOUT_EVERYONE') {
+      return res.status(400).json({ 
+        error: "CONFIRMATION_REQUIRED",
+        message: "You must confirm this action with the exact phrase" 
+      });
+    }
+
+    const masterAdmin = await User.findOne({ username: "master_admin" });
+    if (!masterAdmin) {
+      return res.status(404).json({ error: "Master admin not found" });
+    }
+
+    const count = masterAdmin.adminSessions?.length || 0;
+    
+    // Clear all sessions
+    masterAdmin.adminSessions = [];
+    masterAdmin.kickedSessions = masterAdmin.kickedSessions || [];
+    masterAdmin.kickedSessions.push({
+      action: "emergency_clear",
+      clearedAt: new Date(),
+      clearedBy: adminKey,
+      sessionCount: count
+    });
+    
+    await masterAdmin.save();
+    
+    console.log(`🔴 EMERGENCY: Cleared ALL ${count} admin sessions`);
+    
+    res.json({
+      success: true,
+      message: `Cleared ${count} admin sessions. All admins have been logged out.`,
+      clearedCount: count,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error("Error in emergency clear:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+
+
 export default router;

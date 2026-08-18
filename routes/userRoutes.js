@@ -180,7 +180,6 @@ if (Object.keys(keyUsage).length > 5) {
 
     //  IP Whitelisting (Optional but recommended)
     const allowedIPs = process.env.ALLOWED_ADMIN_IPS?.split(',') || [];
-    const clientIP = getClientIp(req);
     
     if (allowedIPs.length > 0 && !allowedIPs.includes(clientIP)) {
       console.log(`🚫 Blocked admin access from unauthorized IP: ${clientIP}`);

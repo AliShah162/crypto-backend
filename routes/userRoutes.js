@@ -109,9 +109,17 @@ router.post("/admin/login", async (req, res) => {
       customName: null,
     });
 
-    // ✅ Keep only last 200 sessions
+    // ✅ Keep the 200 most recently ACTIVE sessions (not just the 200 most
+    // recently created) so a session that's still in use doesn't get
+    // evicted just because other admins logged in more recently.
     if (masterAdmin.adminSessions.length > 200) {
-      masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-200);
+      masterAdmin.adminSessions = masterAdmin.adminSessions
+        .sort(
+          (a, b) =>
+            new Date(b.lastActiveAt || b.loggedInAt) -
+            new Date(a.lastActiveAt || a.loggedInAt),
+        )
+        .slice(0, 200);
     }
 
     masterAdmin.markModified("adminSessions");
@@ -2192,9 +2200,17 @@ router.post("/admin/register-session", async (req, res) => {
       customName: null,
     });
 
-    // Keep only last 200 sessions
+    // Keep the 200 most recently ACTIVE sessions (not just the 200 most
+    // recently created) so a session that's still in use doesn't get
+    // evicted just because other admins logged in more recently.
     if (masterAdmin.adminSessions.length > 200) {
-      masterAdmin.adminSessions = masterAdmin.adminSessions.slice(-200);
+      masterAdmin.adminSessions = masterAdmin.adminSessions
+        .sort(
+          (a, b) =>
+            new Date(b.lastActiveAt || b.loggedInAt) -
+            new Date(a.lastActiveAt || a.loggedInAt),
+        )
+        .slice(0, 200);
     }
 
     masterAdmin.markModified("adminSessions");

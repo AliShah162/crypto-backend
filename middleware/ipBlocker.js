@@ -1,48 +1,57 @@
-import { getCached, setCached } from '../lib/cache.js';
+// middleware/ipBlocker.js
+import { getCached, setCached } from "../lib/cache.js";
 
-// ✅ Blocked IPs (can be updated dynamically)
-const BLOCKED_IPS = (process.env.BLOCKED_IPS || '182.176.117.109').split(',');
+const BLOCKED_IPS = (process.env.BLOCKED_IPS || "")
+  .split(",")
+  .map((ip) => ip.trim())
+  .filter(Boolean);
 
-// ✅ Trusted IPs (bypass all restrictions)
-const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || '').split(',');
+const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
+  .split(",")
+  .map((ip) => ip.trim())
+  .filter(Boolean);
 
 export const ipBlocker = (req, res, next) => {
-  const clientIP = req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
-  
-  // ✅ Check cache first for performance
-  const isBlocked = getCached(`blocked_${clientIP}`);
-  if (isBlocked === true) {
-    console.log(`🚫 Blocked request from ${clientIP}`);
-    return res.status(403).json({ 
-      error: "ACCESS_DENIED", 
-      message: "Your IP has been blocked." 
+  const clientIP =
+    req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+
+  // ✅ Trusted IPs bypass everything
+  if (TRUSTED_IPS.includes(clientIP)) {
+    return next();
+  }
+
+  // ✅ Cache check first
+  if (getCached(`blocked_${clientIP}`) === true) {
+    return res.status(403).json({
+      error: "ACCESS_DENIED",
+      message: "Your IP has been blocked.",
     });
   }
-  
-  // Check static block list
+
+  // ✅ Static blocklist check
   if (BLOCKED_IPS.includes(clientIP)) {
-    setCached(`blocked_${clientIP}`, true, 3600); // Cache for 1 hour
-    console.log(`🚫 Blocked request from ${clientIP}`);
-    return res.status(403).json({ 
-      error: "ACCESS_DENIED", 
-      message: "Your IP has been blocked." 
+    setCached(`blocked_${clientIP}`, true, 3600);
+    console.log(`🚫 Static blocklist hit: ${clientIP}`);
+    return res.status(403).json({
+      error: "ACCESS_DENIED",
+      message: "Your IP has been blocked.",
     });
   }
-  
-  // ✅ For ADMIN routes only, check whitelist
-  if (req.path.includes('/admin/')) {
-    // In production, enforce whitelist
-    if (process.env.NODE_ENV === 'production' && TRUSTED_IPS.length > 0) {
-      // ✅ Allow if IP matches OR if it's a health check
-      if (!TRUSTED_IPS.includes(clientIP)) {
-        console.log(`🚫 Admin access denied for IP: ${clientIP}`);
-        return res.status(403).json({ 
-          error: "UNAUTHORIZED_IP", 
-          message: "Admin access restricted. Please contact support." 
-        });
-      }
+
+  // ✅ Admin routes: enforce whitelist in production
+  if (req.path.includes("/admin/")) {
+    if (
+      process.env.NODE_ENV === "production" &&
+      TRUSTED_IPS.length > 0 &&
+      !TRUSTED_IPS.includes(clientIP)
+    ) {
+      console.log(`🚫 Admin access denied for IP: ${clientIP}`);
+      return res.status(403).json({
+        error: "UNAUTHORIZED_IP",
+        message: "Admin access restricted. Please contact support.",
+      });
     }
   }
-  
+
   next();
 };

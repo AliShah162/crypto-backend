@@ -13,7 +13,11 @@ import User from "./models/User.js";
 import { ipBlocker } from "./middleware/ipBlocker.js";
 import { autoBlocker } from "./middleware/autoBlocker.js";
 import { requestLogger } from "./middleware/requestLogger.js";
-import { adminRateLimiter, userRateLimiter } from "./middleware/rateLimiter.js";
+import {
+  adminRateLimiter,
+  userRateLimiter,
+  loginRateLimiter,
+} from "./middleware/rateLimiter.js";
 
 import userRoutes from "./routes/userRoutes.js";
 
@@ -28,6 +32,10 @@ console.log("ADMIN_API_KEY exists:", !!process.env.ADMIN_API_KEY);
 console.log("CLOUDINARY_CLOUD_NAME exists:", !!process.env.CLOUDINARY_CLOUD_NAME);
 console.log("BLOCKED_IPS:", process.env.BLOCKED_IPS || "(none)");
 console.log("TRUSTED_ADMIN_IPS:", process.env.TRUSTED_ADMIN_IPS || "(none)");
+console.log(
+  "Vercel KV:",
+  process.env.KV_REST_API_URL ? "✅ enabled" : "⚠️ in-memory fallback"
+);
 
 const app = express();
 
@@ -109,7 +117,7 @@ app.use(morgan("combined", { stream: logger.stream }));
 // ================= SECURITY MIDDLEWARE (ORDER MATTERS!) =================
 // ============================================================
 
-// 1. IP BLOCKER — runs FIRST, cheapest check (in-memory cache)
+// 1. IP BLOCKER — runs FIRST, cheapest check
 app.use(ipBlocker);
 
 // 2. AUTO BLOCKER — tracks request counts, auto-bans repeat offenders
@@ -119,7 +127,6 @@ app.use(autoBlocker);
 app.use(requestLogger);
 
 // 4. RATE LIMITERS — applied per route group below
-// (Cannot apply globally because admin and user need different limits)
 
 // ================= CACHE HEADERS =================
 app.use((req, res, next) => {
@@ -168,6 +175,7 @@ app.get("/ping", (req, res) => {
       mongoUri: !!process.env.MONGO_URI,
       adminKey: !!process.env.ADMIN_API_KEY,
       cloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
+      kv: !!process.env.KV_REST_API_URL,
     },
     timestamp: new Date().toISOString(),
   });
@@ -180,6 +188,7 @@ app.get("/api/test", (req, res) => {
     mongodb:
       mongoose.connection.readyState === 1 ? "connected" : "disconnected",
     cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? "configured" : "missing",
+    kv: process.env.KV_REST_API_URL ? "enabled" : "fallback",
     timestamp: new Date().toISOString(),
   });
 });
@@ -198,6 +207,12 @@ app.get("/", (req, res) => {
 // ============================================================
 // ================= ROUTES WITH RATE LIMITING =================
 // ============================================================
+
+// ✅ Login brute-force protection (5 attempts / 15 min per IP)
+// MUST come BEFORE the general admin/user limiters
+app.use("/api/users/admin/login", loginRateLimiter);
+app.use("/api/users/virtual-admin/login", loginRateLimiter);
+app.use("/api/users/login", loginRateLimiter);
 
 // ✅ Admin routes — strict rate limit (100 req / 15 min per IP+key)
 app.use("/api/users/admin", adminRateLimiter);
@@ -226,7 +241,6 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("🚨 Error:", err.message);
 
-  // Handle rate limiter errors specially
   if (err.status === 429) {
     return res.status(429).json({
       error: "TOO_MANY_REQUESTS",
@@ -369,6 +383,7 @@ connectToMongoDB()
       console.log(`📍 IP Blocker: active`);
       console.log(`📍 Auto Blocker: active`);
       console.log(`📍 Rate Limiting: active`);
+      console.log(`📍 Login Brute-force Protection: active`);
       console.log(`\n🔥 Ready!`);
     });
   })

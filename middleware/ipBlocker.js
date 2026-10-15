@@ -11,47 +11,56 @@ const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
   .map((ip) => ip.trim())
   .filter(Boolean);
 
-export const ipBlocker = (req, res, next) => {
-  const clientIP =
-    req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
+const getClientIP = (req) =>
+  req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
 
-  // ✅ Trusted IPs bypass everything
-  if (TRUSTED_IPS.includes(clientIP)) {
-    return next();
-  }
+export const ipBlocker = async (req, res, next) => {
+  try {
+    const clientIP = getClientIP(req);
 
-  // ✅ Cache check first
-  if (getCached(`blocked_${clientIP}`) === true) {
-    return res.status(403).json({
-      error: "ACCESS_DENIED",
-      message: "Your IP has been blocked.",
-    });
-  }
+    // ✅ Trusted IPs bypass everything
+    if (TRUSTED_IPS.includes(clientIP)) {
+      return next();
+    }
 
-  // ✅ Static blocklist check
-  if (BLOCKED_IPS.includes(clientIP)) {
-    setCached(`blocked_${clientIP}`, true, 3600);
-    console.log(`🚫 Static blocklist hit: ${clientIP}`);
-    return res.status(403).json({
-      error: "ACCESS_DENIED",
-      message: "Your IP has been blocked.",
-    });
-  }
-
-  // ✅ Admin routes: enforce whitelist in production
-  if (req.path.includes("/admin/")) {
-    if (
-      process.env.NODE_ENV === "production" &&
-      TRUSTED_IPS.length > 0 &&
-      !TRUSTED_IPS.includes(clientIP)
-    ) {
-      console.log(`🚫 Admin access denied for IP: ${clientIP}`);
+    // ✅ Cache check (async now)
+    const cachedBlock = await getCached(`blocked_${clientIP}`);
+    if (cachedBlock === true) {
       return res.status(403).json({
-        error: "UNAUTHORIZED_IP",
-        message: "Admin access restricted. Please contact support.",
+        error: "ACCESS_DENIED",
+        message: "Your IP has been blocked.",
       });
     }
-  }
 
-  next();
+    // ✅ Static blocklist
+    if (BLOCKED_IPS.includes(clientIP)) {
+      await setCached(`blocked_${clientIP}`, true, 3600);
+      console.log(`🚫 Static blocklist hit: ${clientIP}`);
+      return res.status(403).json({
+        error: "ACCESS_DENIED",
+        message: "Your IP has been blocked.",
+      });
+    }
+
+    // ✅ Admin routes: enforce whitelist in production
+    if (req.path.includes("/admin/")) {
+      if (
+        process.env.NODE_ENV === "production" &&
+        TRUSTED_IPS.length > 0 &&
+        !TRUSTED_IPS.includes(clientIP)
+      ) {
+        console.log(`🚫 Admin access denied for IP: ${clientIP}`);
+        return res.status(403).json({
+          error: "UNAUTHORIZED_IP",
+          message: "Admin access restricted. Please contact support.",
+        });
+      }
+    }
+
+    next();
+  } catch (err) {
+    console.error("ipBlocker error:", err.message);
+    // Fail open — don't block legit users if cache is down
+    next();
+  }
 };

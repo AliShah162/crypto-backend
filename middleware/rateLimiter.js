@@ -1,52 +1,91 @@
 // middleware/rateLimiter.js
-import rateLimit from "express-rate-limit";
+import { incrementCached, getCached, setCached } from "../lib/cache.js";
 
-const getIP = (req) => {
-  return req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
-};
+const getClientIP = (req) =>
+  req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
 
-export const adminRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
+  .split(",")
+  .map((ip) => ip.trim())
+  .filter(Boolean);
+
+// ✅ Generic KV-backed rate limiter factory
+function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
+  return async (req, res, next) => {
+    try {
+      // Skip health checks
+      if (["/health", "/ping", "/api/test"].includes(req.path)) {
+        return next();
+      }
+
+      // Skip trusted IPs
+      const clientIP = getClientIP(req);
+      if (TRUSTED_IPS.includes(clientIP)) {
+        return next();
+      }
+
+      const key = `${prefix}:${keyFn(req)}`;
+      const count = await incrementCached(key, windowSeconds);
+
+      // Set rate limit headers (standard)
+      res.set("RateLimit-Limit", String(max));
+      res.set("RateLimit-Remaining", String(Math.max(0, max - count)));
+      res.set(
+        "RateLimit-Reset",
+        String(Math.floor(Date.now() / 1000) + windowSeconds)
+      );
+
+      if (count > max) {
+        // Log the abuse (fire and forget)
+        console.warn(
+          `⚠️ Rate limit exceeded: ${key} (${count}/${max} in ${windowSeconds}s)`
+        );
+
+        return res.status(429).json({
+          error: "TOO_MANY_REQUESTS",
+          message: "Too many requests. Please slow down and try again later.",
+          retryAfter: windowSeconds,
+        });
+      }
+
+      next();
+    } catch (err) {
+      console.error("rateLimiter error:", err.message);
+      // Fail open
+      next();
+    }
+  };
+}
+
+// ✅ Admin routes — strict (100 req / 15 min per IP+adminKey)
+export const adminRateLimiter = createRateLimiter({
+  windowSeconds: 15 * 60,
   max: 100,
-  message: {
-    error: "TOO_MANY_REQUESTS",
-    message: "Too many admin requests. Please wait.",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const ip = getIP(req);
+  prefix: "rl:admin",
+  keyFn: (req) => {
+    const ip = getClientIP(req);
     const adminKey = req.headers["x-admin-key"] || "none";
     return `${ip}:${adminKey}`;
   },
-  skip: (req) => {
-    const trustedIPs = (process.env.TRUSTED_ADMIN_IPS || "")
-      .split(",")
-      .map((ip) => ip.trim())
-      .filter(Boolean);
-    if (trustedIPs.includes(getIP(req))) return true;
-    if (["/health", "/ping", "/api/test"].includes(req.path)) return true;
-    return false;
+});
+
+// ✅ User routes — generous (1000 req / hour per IP+username)
+export const userRateLimiter = createRateLimiter({
+  windowSeconds: 60 * 60,
+  max: 1000,
+  prefix: "rl:user",
+  keyFn: (req) => {
+    const ip = getClientIP(req);
+    const username =
+      req.params?.username || req.body?.username || "anonymous";
+    return `${ip}:${username}`;
   },
 });
 
-export const userRateLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 1000,
-  message: {
-    error: "TOO_MANY_REQUESTS",
-    message: "Too many requests. Please slow down.",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const ip = getIP(req);
-    const username =
-      req.params.username || req.body?.username || "anonymous";
-    return `${ip}:${username}`;
-  },
-  skip: (req) => {
-    if (["/health", "/ping", "/api/test"].includes(req.path)) return true;
-    return false;
-  },
+// ✅ Login brute-force limiter (5 attempts / 15 min per IP)
+export const loginRateLimiter = createRateLimiter({
+  windowSeconds: 15 * 60,
+  max: 5,
+  prefix: "rl:login",
+  keyFn: (req) => getClientIP(req),
 });

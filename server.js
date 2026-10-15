@@ -42,12 +42,10 @@ const app = express();
 // ============================================================
 // ================= TRUST PROXY (CRITICAL for Vercel) =================
 // ============================================================
-// Vercel sits behind a proxy. Without this, req.ip is the proxy IP,
-// not the real client IP — which breaks rate limiting and IP blocking.
 app.set("trust proxy", 1);
 
 // ============================================================
-// ================= BULLETPROOF CORS =================
+// ================= CORS (MUST BE FIRST) =================
 // ============================================================
 
 app.use((req, res, next) => {
@@ -63,6 +61,7 @@ app.use((req, res, next) => {
     "GET, POST, PATCH, DELETE, PUT, OPTIONS"
   );
   res.header("Access-Control-Max-Age", "86400");
+  res.header("Vary", "Origin");
 
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
@@ -73,9 +72,7 @@ app.use((req, res, next) => {
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) {
-        return callback(null, true);
-      }
+      if (!origin) return callback(null, true);
       return callback(null, true);
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
@@ -117,16 +114,14 @@ app.use(morgan("combined", { stream: logger.stream }));
 // ================= SECURITY MIDDLEWARE (ORDER MATTERS!) =================
 // ============================================================
 
-// 1. IP BLOCKER — runs FIRST, cheapest check
+// 1. IP BLOCKER
 app.use(ipBlocker);
 
-// 2. AUTO BLOCKER — tracks request counts, auto-bans repeat offenders
+// 2. AUTO BLOCKER
 app.use(autoBlocker);
 
-// 3. REQUEST LOGGER — logs admin + sensitive endpoint access
+// 3. REQUEST LOGGER
 app.use(requestLogger);
-
-// 4. RATE LIMITERS — applied per route group below
 
 // ================= CACHE HEADERS =================
 app.use((req, res, next) => {
@@ -164,7 +159,7 @@ app.use((req, res, next) => {
 });
 
 // ============================================================
-// ================= HEALTH CHECKS (before rate limiters) =================
+// ================= HEALTH CHECKS =================
 // ============================================================
 
 app.get("/ping", (req, res) => {
@@ -208,16 +203,15 @@ app.get("/", (req, res) => {
 // ================= ROUTES WITH RATE LIMITING =================
 // ============================================================
 
-// ✅ Login brute-force protection (5 attempts / 15 min per IP)
-// MUST come BEFORE the general admin/user limiters
+// ✅ Login brute-force protection
 app.use("/api/users/admin/login", loginRateLimiter);
 app.use("/api/users/virtual-admin/login", loginRateLimiter);
 app.use("/api/users/login", loginRateLimiter);
 
-// ✅ Admin routes — strict rate limit (100 req / 15 min per IP+key)
+// ✅ Admin routes — strict
 app.use("/api/users/admin", adminRateLimiter);
 
-// ✅ All other user routes — generous rate limit (1000 req / hour)
+// ✅ All other user routes — generous
 app.use("/api/users", userRateLimiter);
 
 // ✅ Mount all user routes
@@ -258,43 +252,71 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// ================= MONGODB CONNECTION =================
+// ================= MONGODB CONNECTION (with caching for serverless) =================
 // ============================================================
 
-async function connectToMongoDB(retries = 5, delay = 5000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await mongoose.connect(process.env.MONGO_URI, {
-        maxPoolSize: 50,
-        minPoolSize: 10,
+// ✅ Cache connection across serverless invocations
+let cachedConnection = global.mongoose;
+if (!cachedConnection) {
+  cachedConnection = global.mongoose = { conn: null, promise: null };
+}
+
+async function connectToMongoDB() {
+  if (cachedConnection.conn) {
+    return cachedConnection.conn;
+  }
+
+  if (!cachedConnection.promise) {
+    cachedConnection.promise = mongoose
+      .connect(process.env.MONGO_URI, {
+        maxPoolSize: 10,
+        minPoolSize: 1,
         maxIdleTimeMS: 60000,
-        socketTimeoutMS: 120000,
+        socketTimeoutMS: 60000,
         connectTimeoutMS: 10000,
         serverSelectionTimeoutMS: 10000,
         family: 4,
         retryWrites: true,
         retryReads: true,
-        heartbeatFrequencyMS: 10000,
-        bufferCommands: true,
+        bufferCommands: false,
+      })
+      .then((m) => {
+        console.log("✅ MongoDB Connected");
+        console.log(`   Database: ${m.connection.db.databaseName}`);
+        console.log(`   Host: ${m.connection.host}`);
+        return m;
+      })
+      .catch((err) => {
+        console.error("❌ MongoDB connection failed:", err.message);
+        cachedConnection.promise = null;
+        throw err;
       });
-
-      console.log("✅ MongoDB Connected");
-      console.log(`   Database: ${mongoose.connection.db.databaseName}`);
-      console.log(`   Host: ${mongoose.connection.host}`);
-      return;
-    } catch (err) {
-      console.error(`❌ MongoDB attempt ${i + 1} failed:`, err.message);
-      if (i < retries - 1) {
-        const wait = Math.min(delay * Math.pow(1.5, i), 30000);
-        console.log(`🔄 Retrying in ${wait / 1000}s...`);
-        await new Promise((r) => setTimeout(r, wait));
-      } else {
-        console.error("❌ All MongoDB connection attempts failed");
-        process.exit(1);
-      }
-    }
   }
+
+  cachedConnection.conn = await cachedConnection.promise;
+  return cachedConnection.conn;
 }
+
+// ============================================================
+// ================= ENSURE DB CONNECTED PER REQUEST =================
+// ============================================================
+
+app.use(async (req, res, next) => {
+  try {
+    // Skip health checks so they always work
+    if (req.path === "/ping" || req.path === "/api/test" || req.path === "/") {
+      return next();
+    }
+    await connectToMongoDB();
+    next();
+  } catch (err) {
+    console.error("❌ DB connection middleware error:", err.message);
+    res.status(503).json({
+      error: "DATABASE_UNAVAILABLE",
+      message: "Database temporarily unavailable. Please try again.",
+    });
+  }
+});
 
 // ============================================================
 // ================= MONGODB EVENTS =================
@@ -317,77 +339,107 @@ mongoose.connection.on("reconnected", () => {
 });
 
 // ============================================================
+// ================= ONE-TIME MIGRATIONS (lazy, cached) =================
+// ============================================================
+
+let migrationsRan = false;
+async function runMigrations() {
+  if (migrationsRan) return;
+
+  try {
+    const result = await User.updateMany(
+      { refKey: { $exists: false } },
+      { $set: { refKey: null } }
+    );
+    if (result.modifiedCount > 0) {
+      console.log(`✅ refKey added to ${result.modifiedCount} users`);
+    }
+
+    const VirtualAdmin = mongoose.model("VirtualAdmin");
+    const count = await VirtualAdmin.countDocuments();
+    if (count === 0) {
+      console.log("📝 Creating default virtual admins...");
+      await VirtualAdmin.insertMany([
+        { adminName: "Admin 1", username: "vadmin1", refKey: "aB9xK2mPq7", email: "vadmin1@example.com" },
+        { adminName: "Admin 2", username: "vadmin2", refKey: "cD4yL3nRt8", email: "vadmin2@example.com" },
+        { adminName: "Admin 3", username: "vadmin3", refKey: "eF7zM1pWb5", email: "vadmin3@example.com" },
+        { adminName: "Admin 4", username: "vadmin4", refKey: "gH2kX5qJv9", email: "vadmin4@example.com" },
+        { adminName: "Admin 5", username: "vadmin5", refKey: "iJ6rT8yUc3", email: "vadmin5@example.com" },
+      ]);
+      console.log(`✅ Created 5 virtual admins`);
+    }
+
+    migrationsRan = true;
+  } catch (err) {
+    console.log("⚠️ Migration note:", err.message);
+  }
+}
+
+// ============================================================
 // ================= GRACEFUL SHUTDOWN =================
 // ============================================================
 
 process.on("SIGINT", async () => {
   console.log("🛑 Shutting down...");
   await mongoose.connection.close();
-  console.log("✅ MongoDB connection closed");
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
   console.log("🛑 SIGTERM received, shutting down...");
   await mongoose.connection.close();
-  console.log("✅ MongoDB connection closed");
   process.exit(0);
 });
 
 // ============================================================
-// ================= START SERVER =================
+// ================= VERCEL SERVERLESS EXPORT =================
+// ============================================================
+
+// ✅ This is what Vercel needs — export the Express app as the handler
+export default async function handler(req, res) {
+  // Ensure DB connected before handling request
+  try {
+    if (req.url !== "/ping" && req.url !== "/api/test" && req.url !== "/") {
+      await connectToMongoDB();
+      await runMigrations();
+    }
+  } catch (err) {
+    console.error("❌ Handler DB error:", err.message);
+    return res.status(503).json({
+      error: "DATABASE_UNAVAILABLE",
+      message: "Database temporarily unavailable. Please try again.",
+    });
+  }
+
+  // Hand off to Express
+  return app(req, res);
+}
+
+// ============================================================
+// ================= LOCAL DEV SERVER (Vercel ignores this) =================
 // ============================================================
 
 const PORT = process.env.PORT || 5000;
 
-connectToMongoDB()
-  .then(async () => {
-    // Add refKey field to users that don't have it
-    try {
-      const result = await User.updateMany(
-        { refKey: { $exists: false } },
-        { $set: { refKey: null } }
-      );
-      if (result.modifiedCount > 0) {
-        console.log(`✅ refKey field added to ${result.modifiedCount} users`);
-      }
-    } catch (err) {
-      console.log("⚠️ refKey migration note:", err.message);
-    }
-
-    // Seed default virtual admins if none exist
-    try {
-      const VirtualAdmin = mongoose.model("VirtualAdmin");
-      const count = await VirtualAdmin.countDocuments();
-      if (count === 0) {
-        console.log("📝 Creating default virtual admins...");
-        await VirtualAdmin.insertMany([
-          { adminName: "Admin 1", username: "vadmin1", refKey: "aB9xK2mPq7", email: "vadmin1@example.com" },
-          { adminName: "Admin 2", username: "vadmin2", refKey: "cD4yL3nRt8", email: "vadmin2@example.com" },
-          { adminName: "Admin 3", username: "vadmin3", refKey: "eF7zM1pWb5", email: "vadmin3@example.com" },
-          { adminName: "Admin 4", username: "vadmin4", refKey: "gH2kX5qJv9", email: "vadmin4@example.com" },
-          { adminName: "Admin 5", username: "vadmin5", refKey: "iJ6rT8yUc3", email: "vadmin5@example.com" },
-        ]);
-        console.log(`✅ Created 5 virtual admins`);
-      }
-    } catch (err) {
-      console.log("⚠️ Virtual admin creation note:", err.message);
-    }
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📍 MongoDB: ${mongoose.connection.host}`);
-      console.log(
-        `📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌"}`
-      );
-      console.log(`📍 IP Blocker: active`);
-      console.log(`📍 Auto Blocker: active`);
-      console.log(`📍 Rate Limiting: active`);
-      console.log(`📍 Login Brute-force Protection: active`);
-      console.log(`\n🔥 Ready!`);
+if (!process.env.VERCEL) {
+  connectToMongoDB()
+    .then(async () => {
+      await runMigrations();
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`🚀 Local server running on port ${PORT}`);
+        console.log(`📍 MongoDB: ${mongoose.connection.host}`);
+        console.log(
+          `📍 Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? "✅" : "❌"}`
+        );
+        console.log(`📍 IP Blocker: active`);
+        console.log(`📍 Auto Blocker: active`);
+        console.log(`📍 Rate Limiting: active`);
+        console.log(`📍 Login Brute-force Protection: active`);
+        console.log(`\n🔥 Ready!`);
+      });
+    })
+    .catch((err) => {
+      console.error("❌ Failed to start local server:", err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error("❌ Failed to start server:", err);
-    process.exit(1);
-  });
+}

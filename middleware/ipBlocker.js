@@ -16,6 +16,11 @@ const getClientIP = (req) =>
 
 export const ipBlocker = async (req, res, next) => {
   try {
+    // ✅ CRITICAL: Never block OPTIONS preflight
+    if (req.method === "OPTIONS") {
+      return next();
+    }
+
     const clientIP = getClientIP(req);
 
     // ✅ Trusted IPs bypass everything
@@ -23,7 +28,7 @@ export const ipBlocker = async (req, res, next) => {
       return next();
     }
 
-    // ✅ Cache check (async now)
+    // ✅ Cache check
     const cachedBlock = await getCached(`blocked_${clientIP}`);
     if (cachedBlock === true) {
       return res.status(403).json({

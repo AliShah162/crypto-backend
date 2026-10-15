@@ -1,5 +1,5 @@
 // middleware/rateLimiter.js
-import { incrementCached, getCached, setCached } from "../lib/cache.js";
+import { incrementCached } from "../lib/cache.js";
 
 const getClientIP = (req) =>
   req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
@@ -9,12 +9,16 @@ const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
   .map((ip) => ip.trim())
   .filter(Boolean);
 
-// ✅ Generic KV-backed rate limiter factory
 function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
   return async (req, res, next) => {
     try {
+      // ✅ CRITICAL: Never rate-limit OPTIONS preflight requests
+      if (req.method === "OPTIONS") {
+        return next();
+      }
+
       // Skip health checks
-      if (["/health", "/ping", "/api/test"].includes(req.path)) {
+      if (["/health", "/ping", "/api/test", "/"].includes(req.path)) {
         return next();
       }
 
@@ -27,7 +31,6 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
       const key = `${prefix}:${keyFn(req)}`;
       const count = await incrementCached(key, windowSeconds);
 
-      // Set rate limit headers (standard)
       res.set("RateLimit-Limit", String(max));
       res.set("RateLimit-Remaining", String(Math.max(0, max - count)));
       res.set(
@@ -36,11 +39,9 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
       );
 
       if (count > max) {
-        // Log the abuse (fire and forget)
         console.warn(
-          `⚠️ Rate limit exceeded: ${key} (${count}/${max} in ${windowSeconds}s)`
+          `⚠️ Rate limit: ${key} (${count}/${max} in ${windowSeconds}s)`
         );
-
         return res.status(429).json({
           error: "TOO_MANY_REQUESTS",
           message: "Too many requests. Please slow down and try again later.",
@@ -51,8 +52,7 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
       next();
     } catch (err) {
       console.error("rateLimiter error:", err.message);
-      // Fail open
-      next();
+      next(); // Fail open
     }
   };
 }
@@ -82,10 +82,10 @@ export const userRateLimiter = createRateLimiter({
   },
 });
 
-// ✅ Login brute-force limiter (5 attempts / 15 min per IP)
+// ✅ Login brute-force limiter (10 attempts / 15 min per IP)
 export const loginRateLimiter = createRateLimiter({
   windowSeconds: 15 * 60,
-  max: 5,
+  max: 10,
   prefix: "rl:login",
   keyFn: (req) => getClientIP(req),
 });

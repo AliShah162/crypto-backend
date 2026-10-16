@@ -13,7 +13,7 @@ import path from "path";
 import fs from "fs";
 import Settings from "../models/Settings.js";
 import { fileURLToPath } from "url"; 
-import { getCached, setCached, deleteCached, clearCache } from "../lib/cache.js";
+// import { getCached, setCached, deleteCached, clearCache } from "../lib/cache.js";
 
 
 
@@ -156,90 +156,73 @@ router.post("/admin/login", async (req, res) => {
 const validateAdminSession = async (req, res, next) => {
   try {
     const adminKey = req.headers["x-admin-key"];
-const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
-    
-// ✅ Check against multiple valid keys
-if (!adminKey || !validAdminKeys.includes(adminKey)) {
-  console.log(`🚫 Invalid admin key attempt from IP: ${getClientIp(req)}`);
-  return res.status(401).json({ 
-    error: "Unauthorized", 
-    message: "Invalid admin key" 
-  });
-}
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
 
-// ✅ Additional security: Check if this key is being used from too many IPs
-const keyUsageKey = `key_usage_${adminKey}`;
-const keyUsage = getCached(keyUsageKey) || {};
-const clientIP = getClientIp(req);
+    // ✅ Check against multiple valid keys
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
+      console.log(`🚫 Invalid admin key attempt from IP: ${getClientIp(req)}`);
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: "Invalid admin key"
+      });
+    }
 
-// Track key usage
-if (Object.keys(keyUsage).length > 0 && !keyUsage[clientIP]) {
-  console.log(`⚠️ Admin key used from new IP: ${clientIP}`);
-}
+    const clientIP = getClientIp(req);
 
-keyUsage[clientIP] = Date.now();
-setCached(keyUsageKey, keyUsage, 3600); // Cache for 1 hour
-
-// If key used from > 5 different IPs, it might be compromised
-if (Object.keys(keyUsage).length > 5) {
-  console.log(`🚨 Admin key used from ${Object.keys(keyUsage).length} different IPs!`);
-  // You could implement auto-revocation here
-}
-
-    //  IP Whitelisting (Optional but recommended)
+    // ✅ IP Whitelisting (Optional but recommended)
     const allowedIPs = process.env.ALLOWED_ADMIN_IPS?.split(',') || [];
-    
+
     if (allowedIPs.length > 0 && !allowedIPs.includes(clientIP)) {
       console.log(`🚫 Blocked admin access from unauthorized IP: ${clientIP}`);
-      return res.status(403).json({ 
-        error: "UNAUTHORIZED_IP", 
-        message: "Access denied from this IP address" 
+      return res.status(403).json({
+        error: "UNAUTHORIZED_IP",
+        message: "Access denied from this IP address"
       });
     }
 
     // Check for virtual admin access via refKey in query or body
     const refKey = req.query.refKey || req.body.refKey;
-    
+
     if (refKey) {
       const virtualAdmin = await VirtualAdmin.findOne({ refKey });
-      
+
       if (!virtualAdmin) {
-        return res.status(403).json({ 
-          error: "Unauthorized", 
-          message: "Invalid virtual admin reference key" 
+        return res.status(403).json({
+          error: "Unauthorized",
+          message: "Invalid virtual admin reference key"
         });
       }
-      
+
       // CHECK IF VIRTUAL ADMIN IS KICKED (lastKickedAt within last 20 seconds)
       if (virtualAdmin.lastKickedAt) {
         const now = new Date();
         const timeSinceKick = (now - new Date(virtualAdmin.lastKickedAt)) / 1000;
         if (timeSinceKick < 20) {
-          return res.status(403).json({ 
-            error: "SESSION_KICKED", 
+          return res.status(403).json({
+            error: "SESSION_KICKED",
             message: "Your session has been terminated by the master admin",
             kickedAt: virtualAdmin.lastKickedAt
           });
         }
       }
-      
+
       if (!virtualAdmin.isActive) {
-        return res.status(403).json({ 
-          error: "ADMIN_DISABLED", 
-          message: "Virtual admin account is disabled" 
+        return res.status(403).json({
+          error: "ADMIN_DISABLED",
+          message: "Virtual admin account is disabled"
         });
       }
-      
+
       // CHECK IF BANNED
       if (virtualAdmin.isBanned) {
-        return res.status(403).json({ 
-          error: "ADMIN_BANNED", 
+        return res.status(403).json({
+          error: "ADMIN_BANNED",
           message: "You have been banned from the admin panel",
           reason: virtualAdmin.banReason,
           bannedAt: virtualAdmin.bannedAt
         });
       }
-      
+
       // Attach virtual admin info to request
       req.sessionInfo = {
         isVirtual: true,
@@ -247,13 +230,13 @@ if (Object.keys(keyUsage).length > 5) {
         virtualAdmin: virtualAdmin,
         sessionUser: virtualAdmin.username,
       };
-      
+
       return next();
     }
 
     // Master admin - check session
     const sessionId = req.headers["x-session-id"];
-    
+
     // If no session ID for master admin, let them through
     if (!sessionId) {
       req.sessionInfo = {
@@ -266,7 +249,7 @@ if (Object.keys(keyUsage).length > 5) {
 
     // Only validate session if it exists
     const masterAdmin = await User.findOne({ username: "master_admin" });
-    
+
     if (!masterAdmin || !masterAdmin.adminSessions) {
       req.sessionInfo = {
         isVirtual: false,
@@ -296,13 +279,13 @@ if (Object.keys(keyUsage).length > 5) {
 
     // ✅ Check if session was explicitly revoked
     if (session.isActive === false) {
-      return res.status(403).json({ 
-        error: "SESSION_REVOKED", 
-        message: "Your session has been revoked by the master admin" 
+      return res.status(403).json({
+        error: "SESSION_REVOKED",
+        message: "Your session has been revoked by the master admin"
       });
     }
 
-    // ✅ ✅ ✅ NEW: Check if session was invalidated by password change ✅ ✅ ✅
+    // ✅ Check if session was invalidated by password change
     if (session.invalidatedAt) {
       // Remove this session
       masterAdmin.adminSessions.splice(sessionIndex, 1);
@@ -313,18 +296,18 @@ if (Object.keys(keyUsage).length > 5) {
       });
     }
 
-    // ✅ ✅ ✅ NEW: Check if password was changed after session creation ✅ ✅ ✅
+    // ✅ Check if password was changed after session creation
     if (masterAdmin.passwordUpdatedAt) {
       const sessionCreatedAt = new Date(session.loggedInAt || session.createdAt || Date.now());
       const passwordChangedAt = new Date(masterAdmin.passwordUpdatedAt);
-      
+
       if (sessionCreatedAt < passwordChangedAt) {
         // Invalidate this session
         masterAdmin.adminSessions[sessionIndex].isActive = false;
         masterAdmin.adminSessions[sessionIndex].invalidatedAt = new Date();
         masterAdmin.adminSessions[sessionIndex].invalidatedReason = "Password changed";
         await masterAdmin.save();
-        
+
         return res.status(403).json({
           error: "PASSWORD_CHANGED",
           message: "Password was changed. Please login again."
@@ -332,7 +315,7 @@ if (Object.keys(keyUsage).length > 5) {
       }
     }
 
-    // ✅ ✅ ✅ NEW: Check session timeout ✅ ✅ ✅
+    // ✅ Check session timeout
     const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT_MINUTES || '30') * 60 * 1000;
     if (session.lastActiveAt) {
       const timeSinceActive = Date.now() - new Date(session.lastActiveAt).getTime();
@@ -627,14 +610,7 @@ router.get("/", async (req, res) => {
 router.get("/:username", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    
-    // ✅ Check cache
-    const cacheKey = `user_${username}`;
-    const cachedUser = getCached(cacheKey);
-    if (cachedUser) {
-      return res.json(cachedUser);
-    }
-    
+
     const user = await User.findOne({ username })
       .select("-password -plainPassword")
       .lean();
@@ -643,7 +619,6 @@ router.get("/:username", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    setCached(cacheKey, user, 30);
     res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -869,17 +844,11 @@ router.post("/withdraw", async (req, res) => {
       ...(user.transactions || []),
     ];
 
-    await user.save();
-    // ✅ Invalidate cache
-    deleteCached(`user_${username}`);
-    deleteCached(`balance_${username}`);
-    deleteCached(`transactions_${username}`);
+        await user.save();
 
     res.json({
       success: true,
       currentBalance: user.balance,
-      requestId: withdrawalRequest.id,
-      message: "Withdrawal request submitted for admin approval",
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1504,22 +1473,14 @@ router.post("/:username/notifications", async (req, res) => {
 router.get("/:username/notifications", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    
-    const cacheKey = `notifications_${username}`;
-    const cachedNotifs = getCached(cacheKey);
-    if (cachedNotifs) {
-      return res.json(cachedNotifs);
-    }
-    
+
     const user = await User.findOne({ username }).select("notifications").lean();
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const notifications = user.notifications || [];
-    setCached(cacheKey, notifications, 15);
-    res.json(notifications);
+    res.json(user.notifications || []);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3483,13 +3444,7 @@ router.post(
 router.get("/:username/kyc-status", async (req, res) => {
   try {
     const username = req.params.username.toLowerCase().trim();
-    
-    const cacheKey = `kyc_${username}`;
-    const cachedKYC = getCached(cacheKey);
-    if (cachedKYC) {
-      return res.json(cachedKYC);
-    }
-    
+
     const user = await User.findOne({ username })
       .select("kycVerified kycSubmitted kycStatus kycSubmittedAt")
       .lean();
@@ -3498,15 +3453,12 @@ router.get("/:username/kyc-status", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const result = {
+    res.json({
       kycVerified: user.kycVerified === true,
       kycSubmitted: user.kycSubmitted === true,
       kycStatus: user.kycStatus || "none",
       kycSubmittedAt: user.kycSubmittedAt || null,
-    };
-    
-    setCached(cacheKey, result, 60);
-    res.json(result);
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3653,18 +3605,9 @@ router.post("/admin/verify-kyc", validateAdminSession, async (req, res) => {
     user.markModified("notifications");
     await user.save();
 
-    // ✅ ✅ ✅ ADD THIS - Clear the cache ✅ ✅ ✅
-    deleteCached(`kyc_${username}`);
-    deleteCached(`user_${username}`);
-    // Also clear any other cached KYC data
-    const cacheKeyPattern = `kyc_${username}`;
-    // If you have a function to clear by pattern, use it
-    // Otherwise, just delete the specific keys
-
     res.json({
       success: true,
       message: `KYC ${action}d successfully for ${username}`,
-      kycStatus: kycRecord.status,
     });
   } catch (err) {
     console.error("Error verifying KYC:", err);
@@ -4945,10 +4888,6 @@ router.post(
       });
 
       await user.save();
-      // ✅ Invalidate cache
-      deleteCached(`user_${username}`);
-      deleteCached(`balance_${username}`);
-      deleteCached(`transactions_${username}`);
       console.log(`✅ Deposit request saved for ${user.username}`);
 
       // Notify admin
@@ -5398,48 +5337,6 @@ router.post("/admin/update-payment-details", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ================= CACHE STATS (Admin Only) =================
-router.get("/admin/cache-stats", async (req, res) => {
-  try {
-    const adminKey = req.headers["x-admin-key"];
-    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
-
-    if (!adminKey || !validAdminKeys.includes(adminKey)) {
-      return res.status(401).json({ error: "Unauthorized. Admin access only." });
-    }
-
-    const stats = {
-      keys: cache.keys(),
-      totalKeys: cache.keys().length,
-      memoryUsage: process.memoryUsage(),
-    };
-    
-    res.json(stats);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================= CLEAR CACHE (Admin Only) =================
-router.post("/admin/clear-cache", async (req, res) => {
-  try {
-    const adminKey = req.headers["x-admin-key"];
-    const validAdminKeys = (process.env.ADMIN_API_KEYS || 'admin123456').split(',');
-
-    if (!adminKey || !validAdminKeys.includes(adminKey)) {
-      return res.status(401).json({ error: "Unauthorized. Admin access only." });
-    }
-
-    clearCache();
-    res.json({ success: true, message: "Cache cleared successfully" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-
 
 
 // ============================================================

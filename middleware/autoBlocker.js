@@ -2,6 +2,9 @@
 import { getCached, setCached, incrementCached } from "../lib/cache.js";
 import User from "../models/User.js";
 
+// ✅ KILL SWITCH — set IP_BLOCKING_ENABLED=false to disable
+const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED !== "false";
+
 const getClientIP = (req) =>
   req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
 
@@ -10,18 +13,21 @@ const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
   .map((ip) => ip.trim())
   .filter(Boolean);
 
-const WINDOW_SECONDS = 300; // 5 minutes
+const WINDOW_SECONDS = 300;
 
 export const autoBlocker = async (req, res, next) => {
   try {
-    // ✅ CRITICAL: Never count OPTIONS preflight
+    // ✅ Kill switch
+    if (!BLOCKING_ENABLED) {
+      return next();
+    }
+
     if (req.method === "OPTIONS") {
       return next();
     }
 
     const clientIP = getClientIP(req);
 
-    // ✅ Skip health checks
     if (
       req.path === "/health" ||
       req.path === "/ping" ||
@@ -31,12 +37,15 @@ export const autoBlocker = async (req, res, next) => {
       return next();
     }
 
-    // ✅ Skip trusted IPs
     if (TRUSTED_IPS.includes(clientIP)) {
       return next();
     }
 
-    // ✅ Already blocked?
+    // ✅ Skip admin routes
+    if (req.path.includes("/admin/")) {
+      return next();
+    }
+
     const isBlocked = await getCached(`blocked_${clientIP}`);
     if (isBlocked === true) {
       return res.status(403).json({
@@ -45,22 +54,18 @@ export const autoBlocker = async (req, res, next) => {
       });
     }
 
-    // ✅ Atomic increment (KV-safe across instances)
-    const isAdminPath = req.path.includes("/admin/");
-    const windowKey = `req:${isAdminPath ? "admin" : "user"}:${clientIP}`;
+    const windowKey = `req:user:${clientIP}`;
     const count = await incrementCached(windowKey, WINDOW_SECONDS);
-
-    const limit = isAdminPath ? 100 : 500;
+    const limit = 500;
 
     if (count > limit) {
-      const blockTTL = isAdminPath ? 3600 : 1800;
+      const blockTTL = 1800;
       await setCached(`blocked_${clientIP}`, true, blockTTL);
 
       console.log(
         `🔴 Auto-blocked IP: ${clientIP} (${count} req to ${req.path})`
       );
 
-      // Fire-and-forget DB log
       logAutoBlock(clientIP, count, req.path).catch((err) =>
         console.error("Failed to log auto-block:", err)
       );
@@ -74,7 +79,7 @@ export const autoBlocker = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("autoBlocker error:", err.message);
-    next(); // Fail open
+    next();
   }
 };
 

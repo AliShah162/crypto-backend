@@ -1,6 +1,9 @@
 // middleware/rateLimiter.js
 import { incrementCached } from "../lib/cache.js";
 
+// ✅ KILL SWITCH — set IP_BLOCKING_ENABLED=false to disable
+const RATE_LIMITING_ENABLED = process.env.IP_BLOCKING_ENABLED !== "false";
+
 const getClientIP = (req) =>
   req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;
 
@@ -12,17 +15,19 @@ const TRUSTED_IPS = (process.env.TRUSTED_ADMIN_IPS || "")
 function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
   return async (req, res, next) => {
     try {
-      // ✅ CRITICAL: Never rate-limit OPTIONS preflight requests
+      // ✅ Kill switch
+      if (!RATE_LIMITING_ENABLED) {
+        return next();
+      }
+
       if (req.method === "OPTIONS") {
         return next();
       }
 
-      // Skip health checks
       if (["/health", "/ping", "/api/test", "/"].includes(req.path)) {
         return next();
       }
 
-      // Skip trusted IPs
       const clientIP = getClientIP(req);
       if (TRUSTED_IPS.includes(clientIP)) {
         return next();
@@ -52,12 +57,11 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
       next();
     } catch (err) {
       console.error("rateLimiter error:", err.message);
-      next(); // Fail open
+      next();
     }
   };
 }
 
-// ✅ Admin routes — strict (100 req / 15 min per IP+adminKey)
 export const adminRateLimiter = createRateLimiter({
   windowSeconds: 15 * 60,
   max: 100,
@@ -69,7 +73,6 @@ export const adminRateLimiter = createRateLimiter({
   },
 });
 
-// ✅ User routes — generous (1000 req / hour per IP+username)
 export const userRateLimiter = createRateLimiter({
   windowSeconds: 60 * 60,
   max: 1000,
@@ -82,7 +85,6 @@ export const userRateLimiter = createRateLimiter({
   },
 });
 
-// ✅ Login brute-force limiter (10 attempts / 15 min per IP)
 export const loginRateLimiter = createRateLimiter({
   windowSeconds: 15 * 60,
   max: 10,

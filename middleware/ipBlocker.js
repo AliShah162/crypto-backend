@@ -1,6 +1,9 @@
 // middleware/ipBlocker.js
 import { getCached, setCached } from "../lib/cache.js";
 
+// ✅ KILL SWITCH — set IP_BLOCKING_ENABLED=false in Vercel to disable all blocking
+const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED !== "false";
+
 const BLOCKED_IPS = (process.env.BLOCKED_IPS || "")
   .split(",")
   .map((ip) => ip.trim())
@@ -16,7 +19,12 @@ const getClientIP = (req) =>
 
 export const ipBlocker = async (req, res, next) => {
   try {
-    // ✅ CRITICAL: Never block OPTIONS preflight
+    // ✅ Kill switch — if disabled, skip everything
+    if (!BLOCKING_ENABLED) {
+      return next();
+    }
+
+    // ✅ Never block OPTIONS preflight
     if (req.method === "OPTIONS") {
       return next();
     }
@@ -28,7 +36,12 @@ export const ipBlocker = async (req, res, next) => {
       return next();
     }
 
-    // ✅ Cache check
+    // ✅ Skip admin routes — auth is via x-admin-key + x-session-id
+    if (req.path.includes("/admin/")) {
+      return next();
+    }
+
+    // ✅ Cache check (only for non-admin paths)
     const cachedBlock = await getCached(`blocked_${clientIP}`);
     if (cachedBlock === true) {
       return res.status(403).json({
@@ -47,25 +60,9 @@ export const ipBlocker = async (req, res, next) => {
       });
     }
 
-    // ✅ Admin routes: enforce whitelist in production
-    if (req.path.includes("/admin/")) {
-      if (
-        process.env.NODE_ENV === "production" &&
-        TRUSTED_IPS.length > 0 &&
-        !TRUSTED_IPS.includes(clientIP)
-      ) {
-        console.log(`🚫 Admin access denied for IP: ${clientIP}`);
-        return res.status(403).json({
-          error: "UNAUTHORIZED_IP",
-          message: "Admin access restricted. Please contact support.",
-        });
-      }
-    }
-
     next();
   } catch (err) {
     console.error("ipBlocker error:", err.message);
-    // Fail open — don't block legit users if cache is down
     next();
   }
 };

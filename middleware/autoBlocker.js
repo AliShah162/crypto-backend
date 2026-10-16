@@ -3,7 +3,7 @@ import { getCached, setCached, incrementCached } from "../lib/cache.js";
 import User from "../models/User.js";
 
 // ✅ KILL SWITCH — set IP_BLOCKING_ENABLED=false to disable
-const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED !== "false";
+const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED === "true";
 
 const getClientIP = (req) =>
   req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip;

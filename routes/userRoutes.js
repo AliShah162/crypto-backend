@@ -13,7 +13,6 @@ import path from "path";
 import fs from "fs";
 import Settings from "../models/Settings.js";
 import { fileURLToPath } from "url"; 
-// import { getCached, setCached, deleteCached, clearCache } from "../lib/cache.js";
 
 
 
@@ -5481,7 +5480,34 @@ router.post("/admin/emergency-clear-sessions", async (req, res) => {
 });
 
 
+router.post("/admin/unblock-ip", async (req, res) => {
+  try {
+    const adminKey = req.headers["x-admin-key"];
+    const validAdminKeys = (process.env.ADMIN_API_KEYS || "admin123456").split(",");
+    if (!adminKey || !validAdminKeys.includes(adminKey)) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const { ip, all } = req.body;
+
+    const { deleteCached, clearCache } = await import("../lib/cache.js");
+
+    if (all === true) {
+      await clearCache();
+      return res.json({ success: true, message: "All cache cleared" });
+    }
+
+    if (!ip) return res.status(400).json({ error: "IP required (or all:true)" });
+
+    await deleteCached(`blocked_${ip}`);
+    await deleteCached(`req:user:${ip}`);
+    await deleteCached(`req:admin:${ip}`);
+
+    res.json({ success: true, message: `Unblocked ${ip}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 

@@ -2,8 +2,9 @@
 import { getCached, setCached } from "../lib/cache.js";
 
 // ✅ KILL SWITCH — set IP_BLOCKING_ENABLED=false in Vercel to disable all blocking
-const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED !== "false";
-
+// ✅ KILL SWITCH — blocking is OFF by default.
+// Set IP_BLOCKING_ENABLED=true in Vercel to turn it back on.
+const BLOCKING_ENABLED = process.env.IP_BLOCKING_ENABLED === "true";
 const BLOCKED_IPS = (process.env.BLOCKED_IPS || "")
   .split(",")
   .map((ip) => ip.trim())

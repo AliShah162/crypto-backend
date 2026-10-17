@@ -36,6 +36,14 @@ router.get("/test", (req, res) => {
   });
 });
 
+
+
+const denyAdmin = (req, res, status, body) => {
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+  return res.status(status).json(body);
+};
 // ============================================================
 // ================= ADMIN LOGIN (SECURE) =================
 // ============================================================
@@ -330,12 +338,18 @@ const validateAdminSession = async (req, res, next) => {
     }
 
     // ✅ Update lastActiveAt
-    masterAdmin.adminSessions[sessionIndex].lastActiveAt = new Date();
-    masterAdmin.markModified("adminSessions");
-    await User.findOneAndUpdate(
-      { username: "master_admin" },
-      { $set: { adminSessions: masterAdmin.adminSessions } }
-    );
+        // ✅ Throttled, atomic, non-blocking heartbeat (no full-doc rewrite)
+    const lastActiveMs = session.lastActiveAt
+      ? new Date(session.lastActiveAt).getTime()
+      : 0;
+    if (Date.now() - lastActiveMs > 60_000) {
+      User.updateOne(
+        { username: "master_admin", "adminSessions.sessionId": sessionId },
+        { $set: { "adminSessions.$.lastActiveAt": new Date() } }
+      ).catch((err) =>
+        console.error("heartbeat update failed:", err.message)
+      );
+    }
 
     req.sessionInfo = {
       sessionId: sessionId,

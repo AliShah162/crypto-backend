@@ -43,16 +43,21 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
         String(Math.floor(Date.now() / 1000) + windowSeconds)
       );
 
-      if (count > max) {
-        console.warn(
-          `⚠️ Rate limit: ${key} (${count}/${max} in ${windowSeconds}s)`
-        );
-        return res.status(429).json({
-          error: "TOO_MANY_REQUESTS",
-          message: "Too many requests. Please slow down and try again later.",
-          retryAfter: windowSeconds,
-        });
-      }
+     if (count > max) {
+  // ✅ Assert CORS so the browser never reports this as net::ERR_FAILED
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+
+  console.warn(
+    `⚠️ Rate limit: ${key} (${count}/${max} in ${windowSeconds}s)`
+  );
+  return res.status(429).json({
+    error: "TOO_MANY_REQUESTS",
+    message: "Too many requests. Please slow down and try again later.",
+    retryAfter: windowSeconds,
+  });
+}
 
       next();
     } catch (err) {
@@ -64,7 +69,7 @@ function createRateLimiter({ windowSeconds, max, prefix, keyFn }) {
 
 export const adminRateLimiter = createRateLimiter({
   windowSeconds: 15 * 60,
-  max: 100,
+  max: 1000,
   prefix: "rl:admin",
   keyFn: (req) => {
     const ip = getClientIP(req);

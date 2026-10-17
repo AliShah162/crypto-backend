@@ -19,6 +19,11 @@ import userRoutes from "./routes/userRoutes.js";
 dotenv.config();
 
 const app = express();
+function applyCors(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+}
 
 // ============================================================
 // ✅ 1. TRUST PROXY
@@ -153,6 +158,7 @@ app.use(async (req, res, next) => {
     next();
   } catch (err) {
     console.error("❌ DB middleware error:", err.message);
+    applyCors(req, res); 
     res.status(503).json({
       error: "DATABASE_UNAVAILABLE",
       message: "Database temporarily unavailable. Please try again.",
